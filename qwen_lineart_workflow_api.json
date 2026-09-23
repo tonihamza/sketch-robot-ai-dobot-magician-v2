@@ -1,0 +1,117 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_edit_2511_fp8mixed.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "4": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": ["1", 0],
+      "shift": 3.1
+    }
+  },
+  "5": {
+    "class_type": "CFGNorm",
+    "inputs": {
+      "model": ["4", 0],
+      "strength": 1.0
+    }
+  },
+  "20": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "input_portrait.jpg"
+    }
+  },
+  "23": {
+    "class_type": "FluxKontextImageScale",
+    "inputs": {
+      "image": ["20", 0]
+    }
+  },
+  "6": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": ["2", 0],
+      "vae": ["3", 0],
+      "image1": ["23", 0],
+      "prompt": "Create a centered square head-and-shoulders line portrait of the person in the reference photograph. Preserve the person's recognizable facial proportions, hairstyle and expression. The generated image itself must contain thin black lines only on a completely white background. Use clean, sparse, continuous, uniform-width centerline strokes. Every facial feature must be represented by outline strokes only. Draw hair using only a few contour and strand lines. Draw eyebrows, pupils, nostrils and lips as thin contours, never as black shapes. Draw only the person: face, hair contours, neck, shoulders and one simple clothing neckline. No scenery and no objects from the original background. Absolutely no solid black areas, no filled shapes, no thick masses, no shading, no gray, no color, no hatching, no cross-hatching, no stippling, no shadows, no gradients, no text and no border. Minimal centerline vector art for a pen plotter."
+    }
+  },
+  "7": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": ["2", 0],
+      "vae": ["3", 0],
+      "image1": ["23", 0],
+      "prompt": ""
+    }
+  },
+  "8": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "conditioning": ["6", 0],
+      "reference_latents_method": "index_timestep_zero"
+    }
+  },
+  "9": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "conditioning": ["7", 0],
+      "reference_latents_method": "index_timestep_zero"
+    }
+  },
+  "10": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": ["23", 0],
+      "vae": ["3", 0]
+    }
+  },
+  "11": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["5", 0],
+      "seed": 6834410345697826643,
+      "steps": 40,
+      "cfg": 4.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": ["8", 0],
+      "negative": ["9", 0],
+      "latent_image": ["10", 0],
+      "denoise": 1.0
+    }
+  },
+  "12": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["11", 0],
+      "vae": ["3", 0]
+    }
+  },
+  "13": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["12", 0],
+      "filename_prefix": "lineart/qwenedit2511_lineart"
+    }
+  }
+}
