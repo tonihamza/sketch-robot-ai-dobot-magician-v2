@@ -135,6 +135,48 @@ class Robot:
         if self.rpc(61)!=b'\x01\x00':
             raise RobotError('Controllerul nu confirmă laserul oprit')
 
+    def focus_laser(self, cancel, started=lambda:None):
+        """One stationary 1 s ON/OFF pulse, with OFF queued before starting.
+
+        ID 61 has no power field. This is not a low-power aiming beam.
+        Controller WAIT/OFF survives a stalled UI; host cancellation/timeout
+        additionally sends immediate OFF and clears the queue. No ON retries.
+        """
+        self.laser_session=True
+        try:
+            self.stop()
+            self.prepare_laser()
+            self.check_clear()
+            last=None
+            for command,data in ((61,b'\x01\x01'),(110,struct.pack('<I',1000)),
+                                 (61,b'\x01\x00'),(110,struct.pack('<I',1))):
+                if cancel.is_set():return
+                raw=self.rpc(command,3,data)
+                if len(raw)!=8:
+                    raise RobotError('Index de focalizare invalid; laserul nu este pornit')
+                index=struct.unpack('<Q',raw)[0]
+                if last is not None and index<=last:
+                    raise RobotError('Coada de focalizare nu a fost confirmată')
+                last=index
+            if cancel.is_set():return
+            deadline=time.monotonic()+2
+            self.rpc(240,1)
+            started()
+            while not cancel.is_set():
+                self.check_clear()
+                raw=self.rpc(246)
+                if len(raw)!=8:
+                    raise RobotError('Index de execuție pentru focalizare invalid')
+                if struct.unpack('<Q',raw)[0]>=last:return
+                if time.monotonic()>=deadline:
+                    raise RobotError('Focalizarea nu s-a încheiat în timpul permis')
+                cancel.wait(.025)
+        finally:
+            self.stop()
+            if self.rpc(61)!=b'\x01\x00':
+                self.fault=True
+                raise RobotError('Stingerea laserului nu este confirmată. Întrerupe alimentarea laserului.')
+
     def continuous_laser(self, points, power, cancel, progress=lambda n:None):
         if not math.isfinite(power) or not 0<power<=100:
             raise RobotError('Putere laser: peste 0 și maximum 100%')

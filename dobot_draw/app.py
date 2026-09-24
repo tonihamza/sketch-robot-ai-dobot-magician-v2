@@ -35,6 +35,8 @@ class App:
         self.tool_mode=tk.StringVar(value='Pix');self.selected_mode='Pix'
         self.laser_z=tk.StringVar(value='');self.laser_speed=tk.StringVar(value='5');self.laser_power=tk.StringVar(value='10')
         self.laser_safe=tk.BooleanVar(value=False)
+        self.focus_active=False;self.disconnect_after_focus=False
+        self.focus_status=tk.StringVar(value='Focalizare: neactivată')
         self.status=tk.StringVar(value='Deconectat · Conectează robotul pentru calibrare')
         devices=list(list_ports.comports())
         preferred=next((p.device for p in devices if p.vid==0x10c4 and p.pid==0xea60),None)
@@ -86,7 +88,12 @@ class App:
             ttk.Entry(self.laser_frame,textvariable=var,width=10).grid(row=i,column=1,padx=8)
         ttk.Button(self.laser_frame,text='Memorează Z laser (fascicul oprit)',command=self.capture_laser_z).grid(row=3,column=0,columnspan=2,sticky='ew')
         ttk.Label(self.laser_frame,text='JLM4035ZA-G1Y5 · Z la focalizare, fără contact.\nVerifică alinierea fasciculului cu zona XY a pixului.',wraplength=390).grid(row=4,column=0,columnspan=2,sticky='w')
-        ttk.Checkbutton(self.laser_frame,text='XY aliniat; zonă protejată, ochelari și material verificate',variable=self.laser_safe).grid(row=5,column=0,columnspan=2,sticky='w')
+        ttk.Checkbutton(self.laser_frame,text='XY aliniat; zonă protejată, ochelari\nși material verificate',variable=self.laser_safe).grid(row=5,column=0,columnspan=2,sticky='w')
+        self.focus_button=ttk.Button(self.laser_frame,text='Aprinde laserul · 1 secundă',command=self.focus_laser)
+        self.focus_button.grid(row=6,column=0,sticky='ew',pady=4)
+        ttk.Button(self.laser_frame,text='STINGE / STOP',command=self.stop).grid(row=6,column=1,sticky='ew')
+        ttk.Label(self.laser_frame,text='Probă ON/OFF: puterea (%) de gravare nu se aplică.\nPoate arde materialul. Reglează poziția cu laserul stins,\napoi verifică punctul și memorează Z. Fără mișcare automată.',wraplength=390).grid(row=7,column=0,columnspan=2,sticky='w')
+        ttk.Label(self.laser_frame,textvariable=self.focus_status,wraplength=390).grid(row=8,column=0,columnspan=2,sticky='w')
         ttk.Label(left,text='2. Încarcă desenul',font=('Segoe UI',14,'bold')).pack(anchor='w',pady=(12,4))
         ttk.Button(left,text='Alege fișier SVG…',command=self.choose_svg).pack(fill='x')
         photorow=ttk.Frame(left);photorow.pack(fill='x',pady=3)
@@ -176,6 +183,10 @@ class App:
         while not self.events.empty():
             item=self.events.get()
             if item[0]=='status':self.status.set(item[1])
+            elif item[0]=='focus_on':
+                if self.focus_active:
+                    self.focus_status.set('LASER APRINS temporar · maximum 1 secundă în controller')
+                    self.status.set('Probă laser: aprins temporar · STINGE / STOP întrerupe proba')
             elif item[0]=='ai_status':self.ai_status.set(item[1])
             elif item[0]=='ai_done':
                 self.ai_busy=False
@@ -190,10 +201,12 @@ class App:
             elif item[0]=='progress':self.progress['value']=item[1]
             elif item[0]=='done':
                 self.busy=False
+                self.finish_focus()
                 try:item[1](item[2])
                 except Exception as e:self.error(e)
             elif item[0]=='error':
                 self.busy=False;self.dry_key=None
+                self.finish_focus(failed=True)
                 self.active_job.set('Robot: lucrare oprită / eroare');self.laser_safe.set(False)
                 DATA.mkdir(exist_ok=True)
                 with (DATA/'errors.log').open('a',encoding='utf-8') as f:f.write(item[2]+'\n')
@@ -203,9 +216,7 @@ class App:
                     self.robot=None;self.connect_button['text']='Conectează USB'
                 self.error(item[1])
         if self.close_pending and not self.busy and not self.ai_busy:
-            if self.robot:self.robot.close()
-            if self.studio:self.studio.close()
-            self.root.destroy();return
+            self.finish_close();return
         self.poll_id=self.root.after(80,self.poll)
 
     def require_robot(self):
@@ -213,6 +224,7 @@ class App:
 
     def tool_changed(self,event=None):
         if self.busy:
+            if self.focus_active:self.stop()
             self.tool_mode.set(self.selected_mode);return
         self.selected_mode=self.tool_mode.get();self.laser_safe.set(False)
         laser=self.selected_mode=='Laser'
@@ -221,6 +233,33 @@ class App:
         self.probe_button['text']='Probă laser STINS' if laser else 'Probă cu pixul ridicat'
         self.run_button['text']='GRAVEAZĂ' if laser else 'DESENEAZĂ'
         self.position_help['text']=('Laser: Z constant la focalizare; fascicul stins între linii.\nPune unealta în interiorul foii. Proba folosește același Z, cu laserul stins.\nNu muta accesoriile cât timp robotul lucrează.' if laser else 'Pix: contact la Z calibrat + corecție; ridicare între linii.\nPune pixul deasupra foii, în interior. La final revine la poziția înaltă de pornire.')
+
+    def focus_laser(self):
+        if self.busy or self.close_pending:return
+        try:
+            self.require_robot()
+            if self.tool_mode.get()!='Laser':raise ValueError('Selectează unealta Laser')
+            if not self.laser_safe.get():
+                raise ValueError('Confirmă zona protejată, ochelarii, materialul și alinierea înainte de aprindere')
+        except Exception as e:self.error(e);return
+        robot=self.robot
+        self.focus_active=True;self.focus_button['state']='disabled'
+        self.focus_status.set('Pregătire probă de focalizare…')
+        self.active_job.set('Robot: probă laser de 1 secundă, fără mișcare')
+        def task():
+            robot.focus_laser(self.cancel,lambda:self.events.put(('focus_on',)))
+        def done(_):
+            self.status.set('Laser STINS · Ajustează înălțimea cu Unlock sau memorează Z laser.')
+            self.active_job.set('Robot: probă de focalizare terminată')
+            if self.disconnect_after_focus and not self.close_pending:
+                self.disconnect_after_focus=False;self.connect()
+        self.background(task,done)
+
+    def finish_focus(self,failed=False):
+        if not self.focus_active:return
+        self.focus_active=False;self.focus_button['state']='normal'
+        self.focus_status.set('Eroare la focalizare — verifică stingerea laserului.' if failed else 'Laser STINS · poți memora Z sau repeta proba')
+        if failed:self.disconnect_after_focus=False
 
     def save_laser_profile(self):
         z=float(self.laser_z.get().replace(',','.'))
@@ -255,11 +294,17 @@ class App:
             if preferred:self.port.set(preferred)
 
     def connect(self):
+        if self.focus_active:
+            self.disconnect_after_focus=True;self.stop();return
         if self.busy:return
         if self.robot:
-            self.robot.close();self.robot=None;self.dry_key=None
-            self.connect_button['text']='Conectează USB';self.status.set('Deconectat');return
+            robot=self.robot;self.robot=None;self.dry_key=None
+            self.connect_button['text']='Conectează USB'
+            try:robot.close();self.status.set('Deconectat')
+            except Exception as e:self.error(e)
+            return
         port=self.port.get().strip()
+        self.focus_status.set('Focalizare: neactivată')
         def task():
             r=Robot(port)
             try:
@@ -442,6 +487,7 @@ class App:
         robot=self.robot;cal=self.cal;samples=list(self.samples);fingerprint=dict(self.fingerprint)
         job_name=Path(self.file).parent.name+'/'+Path(self.file).name
         self.active_job.set(f'În execuție: {values["tool_mode"]} · {job_name}')
+        self.focus_status.set('Focalizare: inactivă · vezi starea lucrării')
         self.laser_safe.set(False)
         self.progress['value']=0
         self.status.set('Verificare traseu…')
@@ -516,8 +562,9 @@ class App:
 
     def stop(self):
         if self.busy:
-            self.cancel.set();self.dry_key=None;self.status.set('Oprire solicitată… Nu se va ridica automat pixul.')
+            self.cancel.set();self.dry_key=None;self.status.set('Oprire și stingere solicitate… Fără ridicare automată.')
         elif self.robot:
+            if self.tool_mode.get()=='Laser':self.robot.laser_session=True
             self.background(self.robot.stop,lambda _:self.status.set('Controller oprit; coadă golită.'))
 
     def close(self):
@@ -525,7 +572,15 @@ class App:
             self.close_pending=True;self.cancel_ai();self.stop()
         else:
             self.root.after_cancel(self.poll_id)
+            self.finish_close()
+
+    def finish_close(self):
+        try:
             if self.robot:self.robot.close()
+        except Exception as e:
+            self.error(f'Oprire la închidere neconfirmată: {e}. Întrerupe fizic alimentarea laserului.')
+        finally:
+            self.robot=None
             if self.studio:self.studio.close()
             self.root.destroy()
 

@@ -33,6 +33,82 @@ class AppTests(unittest.TestCase):
         # Collect old Tk fixtures on the UI thread before worker allocations.
         gc.collect()
 
+    def test_focus_requires_explicit_laser_confirmation_and_needs_no_svg_or_calibration(self):
+        with tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)),patch('dobot_draw.app.messagebox.showerror') as error:
+            root=tk.Tk();root.withdraw();app=App(root)
+            try:
+                from unittest.mock import Mock
+                app.robot=Mock(fault=False)
+                app.focus_laser();app.robot.focus_laser.assert_not_called()
+                app.tool_mode.set('Laser');app.tool_changed()
+                app.focus_laser();app.robot.focus_laser.assert_not_called()
+                self.assertEqual(error.call_count,2)
+                app.laser_safe.set(True);app.focus_laser()
+                deadline=time.monotonic()+3
+                while app.busy and time.monotonic()<deadline:root.update();time.sleep(.01)
+                app.robot.focus_laser.assert_called_once()
+                self.assertFalse(app.focus_active);self.assertIn('STINS',app.focus_status.get())
+                self.assertIsNone(app.file);self.assertIsNone(app.cal)
+                app.robot.move.assert_not_called();app.robot.continuous_laser.assert_not_called()
+            finally:app.close()
+
+    def test_focus_blocks_jobs_and_can_be_stopped_disconnected_or_closed(self):
+        for action in ('stop','disconnect','close','tool_change'):
+            with self.subTest(action=action),tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)),patch('dobot_draw.app.messagebox.showerror') as error:
+                root=tk.Tk();root.withdraw();app=App(root)
+                entered=threading.Event();finished=threading.Event();closed=False
+                try:
+                    from unittest.mock import Mock
+                    robot=Mock(fault=False)
+                    def focus(cancel,started):
+                        started();entered.set();cancel.wait(3);finished.set()
+                    robot.focus_laser.side_effect=focus;app.robot=robot
+                    app.tool_mode.set('Laser');app.tool_changed();app.laser_safe.set(True)
+                    app.focus_laser();self.assertTrue(entered.wait(1))
+                    app.focus_laser();app.capture_laser_z();app.run(False)
+                    robot.focus_laser.assert_called_once();robot.pose.assert_not_called()
+                    app.ai_busy=True;app.ai_cancel.clear()
+                    if action=='stop':app.stop()
+                    elif action=='disconnect':app.connect()
+                    elif action=='tool_change':app.tool_mode.set('Pix');app.tool_changed()
+                    else:
+                        app.close();self.assertTrue(app.ai_cancel.is_set());app.ai_busy=False
+                    if action!='close':self.assertFalse(app.ai_cancel.is_set());app.ai_busy=False
+                    self.assertTrue(finished.wait(1))
+                    deadline=time.monotonic()+3
+                    while app.busy and time.monotonic()<deadline:root.update();time.sleep(.01)
+                    self.assertFalse(app.busy);self.assertFalse(app.focus_active)
+                    self.assertFalse(error.called)
+                    if action=='disconnect':self.assertIsNone(app.robot);robot.close.assert_called_once()
+                    elif action=='tool_change':self.assertEqual(app.tool_mode.get(),'Laser')
+                    elif action=='close':closed=True;robot.close.assert_called_once()
+                finally:
+                    if not closed:app.ai_busy=False;app.close()
+
+    def test_focus_failure_releases_controls_without_reporting_confirmed_off(self):
+        with tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)),patch('dobot_draw.app.messagebox.showerror') as error:
+            root=tk.Tk();root.withdraw();app=App(root)
+            try:
+                from unittest.mock import Mock
+                app.robot=Mock(fault=True);app.robot.focus_laser.side_effect=RuntimeError('USB error')
+                app.tool_mode.set('Laser');app.tool_changed();app.laser_safe.set(True);app.focus_laser()
+                deadline=time.monotonic()+3
+                while app.busy and time.monotonic()<deadline:root.update();time.sleep(.01)
+                self.assertFalse(app.busy);self.assertFalse(app.focus_active)
+                self.assertFalse(app.laser_safe.get());self.assertIsNone(app.robot)
+                self.assertIn('Eroare',app.focus_status.get());self.assertTrue(error.called)
+            finally:app.close()
+
+    def test_shutdown_reports_unconfirmed_stop_and_still_releases_window(self):
+        with tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)),patch('dobot_draw.app.messagebox.showerror') as error:
+            from unittest.mock import Mock
+            root=tk.Tk();root.withdraw();app=App(root)
+            app.robot=Mock(fault=True);app.robot.close.side_effect=RuntimeError('USB lost')
+            app.close()
+            self.assertIsNone(app.robot)
+            self.assertIn('Întrerupe fizic',error.call_args.args[1])
+            with self.assertRaises(tk.TclError):root.winfo_exists()
+
     def test_next_portrait_finishes_while_frozen_robot_job_keeps_running(self):
         with tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)),patch('dobot_draw.app.messagebox.showerror') as error:
             root=tk.Tk();root.withdraw();app=App(root)
