@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from serial.tools import list_ports
 from .robot import Robot, RobotError
-from .geometry import Calibration, build_plan
+from .geometry import Calibration, build_plan, build_laser_plan
 from .kinematics import Kinematics
 from .svg import load_svg
 from .studio import Studio, save_capture, render_paths
@@ -29,6 +29,12 @@ class App:
         self.robot=None;self.busy=False;self.cal=None;self.samples=[];self.paths=[]
         self.file=None;self.fingerprint=None;self.dry_key=None;self.close_pending=False
         self.events=queue.Queue();self.cancel=threading.Event()
+        self.ai_busy=False;self.ai_cancel=threading.Event()
+        self.ai_status=tk.StringVar(value='AI liber · poți pregăti următorul portret în timpul desenării')
+        self.active_job=tk.StringVar(value='Robot: nicio lucrare în execuție')
+        self.tool_mode=tk.StringVar(value='Pix');self.selected_mode='Pix'
+        self.laser_z=tk.StringVar(value='');self.laser_speed=tk.StringVar(value='5');self.laser_power=tk.StringVar(value='10')
+        self.laser_safe=tk.BooleanVar(value=False)
         self.status=tk.StringVar(value='Deconectat · Conectează robotul pentru calibrare')
         devices=list(list_ports.comports())
         preferred=next((p.device for p in devices if p.vid==0x10c4 and p.pid==0xea60),None)
@@ -70,6 +76,17 @@ class App:
         ttk.Button(row,text='Încarcă salvată',command=self.load_cal).pack(side='left',padx=6)
         self.cal_label=ttk.Label(left,text='Fără calibrare',wraplength=400);self.cal_label.pack(anchor='w')
         ttk.Checkbutton(left,text='Suportul, robotul și pixul sunt fixe ca la calibrare',variable=self.fixed).pack(anchor='w',pady=5)
+        mode_row=ttk.Frame(left);mode_row.pack(fill='x',pady=4)
+        ttk.Label(mode_row,text='Unealtă').pack(side='left')
+        mode=ttk.Combobox(mode_row,textvariable=self.tool_mode,values=['Pix','Laser'],state='readonly',width=10)
+        mode.pack(side='left',padx=8);mode.bind('<<ComboboxSelected>>',self.tool_changed)
+        self.laser_frame=ttk.Frame(left)
+        for i,(label,var) in enumerate([('Z laser absolut (mm)',self.laser_z),('Viteză laser (mm/s)',self.laser_speed),('Putere laser (%)',self.laser_power)]):
+            ttk.Label(self.laser_frame,text=label).grid(row=i,column=0,sticky='w')
+            ttk.Entry(self.laser_frame,textvariable=var,width=10).grid(row=i,column=1,padx=8)
+        ttk.Button(self.laser_frame,text='Memorează Z laser (fascicul oprit)',command=self.capture_laser_z).grid(row=3,column=0,columnspan=2,sticky='ew')
+        ttk.Label(self.laser_frame,text='JLM4035ZA-G1Y5 · Z la focalizare, fără contact.\nVerifică alinierea fasciculului cu zona XY a pixului.',wraplength=390).grid(row=4,column=0,columnspan=2,sticky='w')
+        ttk.Checkbutton(self.laser_frame,text='XY aliniat; zonă protejată, ochelari și material verificate',variable=self.laser_safe).grid(row=5,column=0,columnspan=2,sticky='w')
         ttk.Label(left,text='2. Încarcă desenul',font=('Segoe UI',14,'bold')).pack(anchor='w',pady=(12,4))
         ttk.Button(left,text='Alege fișier SVG…',command=self.choose_svg).pack(fill='x')
         photorow=ttk.Frame(left);photorow.pack(fill='x',pady=3)
@@ -82,6 +99,7 @@ class App:
         airow=ttk.Frame(left);airow.pack(fill='x')
         ttk.Label(airow,text='Pași AI: 16 rapid / 24 echilibrat / 40 detaliat').pack(side='left')
         ttk.Combobox(airow,textvariable=self.ai_steps,values=['16','24','32','40'],width=7).pack(side='left',padx=10)
+        ttk.Button(left,text='Anulează generarea AI',command=self.cancel_ai).pack(anchor='w')
         self.file_label=ttk.Label(left,text='Niciun SVG ales',wraplength=400);self.file_label.pack(anchor='w',pady=4)
         fields=ttk.Frame(left);fields.pack(fill='x')
         for i,(key,label) in enumerate([('margin','Margine / micșorare desen (mm)'),('lift','Ridicare pix (mm)'),('offset','Corecție Z: minus = mai jos (mm)'),('speed','Viteză desen (mm/s)'),('z_speed','Viteză Z (mm/s)'),('join_gap','Unire capete (mm; 0 = oprit)')]):
@@ -100,25 +118,49 @@ class App:
         self.info=ttk.Label(right,text='Calibrează cele patru colțuri și alege un SVG.',wraplength=570);self.info.pack(fill='x',pady=6)
         ttk.Checkbutton(right,text='Logo LAPTOP AID în stânga sus',variable=self.brand,command=self.preview).pack(anchor='w')
         ttk.Label(right,text='3. Poziționează și pornește',font=('Segoe UI',14,'bold')).pack(anchor='w',pady=(9,4))
-        ttk.Label(right,text='Cu Unlock, pune pixul DEASUPRA foii, în interiorul celor patru colțuri.\nÎntre linii: Z de desen + ridicarea setată. La final revine\nla poziția înaltă de pornire, pentru schimbarea foii.',wraplength=570).pack(anchor='w')
+        self.position_help=ttk.Label(right,text='Cu Unlock, pune pixul DEASUPRA foii, în interiorul celor patru colțuri.\nÎntre linii: Z de desen + ridicarea setată. La final revine\nla poziția înaltă de pornire, pentru schimbarea foii.',wraplength=570)
+        self.position_help.pack(anchor='w')
         ttk.Checkbutton(right,text='Pixul ȘI brațul au loc; suportul nu le blochează',variable=self.clear).pack(anchor='w',pady=5)
         runrow=ttk.Frame(right);runrow.pack(fill='x')
-        ttk.Button(runrow,text='Probă cu pixul ridicat',command=lambda:self.run(True)).pack(side='left')
-        ttk.Button(runrow,text='DESENEAZĂ',command=lambda:self.run(False)).pack(side='left',padx=8)
+        self.probe_button=ttk.Button(runrow,text='Probă cu pixul ridicat',command=lambda:self.run(True));self.probe_button.pack(side='left')
+        self.run_button=ttk.Button(runrow,text='DESENEAZĂ',command=lambda:self.run(False));self.run_button.pack(side='left',padx=8)
+        ttk.Label(outer,textvariable=self.active_job,wraplength=1050).pack(anchor='w')
+        ttk.Label(outer,textvariable=self.ai_status,wraplength=1050).pack(anchor='w')
         ttk.Label(outer,textvariable=self.status,font=('Segoe UI',11,'bold'),wraplength=1050).pack(anchor='w')
         self.progress=ttk.Progressbar(outer,maximum=100);self.progress.pack(fill='x',pady=5)
-        ttk.Label(outer,text='STOP oprește trimiterea și cere oprirea controllerului. Dacă USB cade, oprirea nu poate fi garantată; nu există reluare automată.',wraplength=1050).pack(anchor='w')
+        ttk.Label(outer,text='STOP cere oprirea robotului și stingerea laserului. La pierderea USB, oprirea/stingerea nu este garantată: folosește întreruperea fizică a alimentării. Fără reluare automată.',wraplength=1050).pack(anchor='w')
         root.protocol('WM_DELETE_WINDOW',self.close)
-        self.studio=Studio(root,self.generate_captured,self.new_photo,self.error)
+        self.studio=Studio(root,self.generate_captured,self.new_photo,self.ai_error)
         self.poll_id=root.after(80,self.poll)
         if (DATA/'calibration.json').exists():
             self.load_cal()
+        if (DATA/'laser.json').exists():
+            try:
+                profile=json.loads((DATA/'laser.json').read_text(encoding='utf-8'))
+                if profile['samples']==self.samples:
+                    self.laser_z.set(str(profile['z']));self.laser_speed.set(str(profile['speed']));self.laser_power.set(str(profile['power']))
+            except (ValueError,KeyError,OSError):pass
 
     def error(self,e):
         self.status.set('Eroare: '+str(e))
-        if self.studio and self.studio.state=='generating':
-            self.studio.confirm()
         messagebox.showerror('Dobot',str(e))
+
+    def ai_error(self,e):
+        self.ai_status.set('AI: '+str(e))
+        if self.studio and self.studio.state=='generating':self.studio.confirm()
+        messagebox.showerror('Fotografie / AI',str(e))
+
+    def cancel_ai(self):
+        if self.ai_busy:
+            self.ai_cancel.set();self.ai_status.set('Anulare AI solicitată; robotul continuă lucrarea curentă.')
+
+    def background_ai(self,task,done):
+        if self.ai_busy:return
+        self.ai_busy=True;self.ai_cancel.clear()
+        def worker():
+            try:self.events.put(('ai_done',done,task()))
+            except Exception as e:self.events.put(('ai_error',str(e),traceback.format_exc()))
+        threading.Thread(target=worker,daemon=True).start()
 
     def background(self,task,done):
         if self.busy:
@@ -134,6 +176,17 @@ class App:
         while not self.events.empty():
             item=self.events.get()
             if item[0]=='status':self.status.set(item[1])
+            elif item[0]=='ai_status':self.ai_status.set(item[1])
+            elif item[0]=='ai_done':
+                self.ai_busy=False
+                if not self.close_pending:
+                    try:item[1](item[2])
+                    except Exception as e:self.ai_error(e)
+            elif item[0]=='ai_error':
+                self.ai_busy=False
+                DATA.mkdir(exist_ok=True)
+                with (DATA/'errors.log').open('a',encoding='utf-8') as f:f.write(item[2]+'\n')
+                if not self.close_pending:self.ai_error(item[1])
             elif item[0]=='progress':self.progress['value']=item[1]
             elif item[0]=='done':
                 self.busy=False
@@ -141,12 +194,15 @@ class App:
                 except Exception as e:self.error(e)
             elif item[0]=='error':
                 self.busy=False;self.dry_key=None
+                self.active_job.set('Robot: lucrare oprită / eroare');self.laser_safe.set(False)
                 DATA.mkdir(exist_ok=True)
                 with (DATA/'errors.log').open('a',encoding='utf-8') as f:f.write(item[2]+'\n')
                 if self.robot and self.robot.fault:
-                    self.robot.close();self.robot=None;self.connect_button['text']='Conectează USB'
+                    try:self.robot.close()
+                    except Exception:pass  # Original transport/stop error is shown below.
+                    self.robot=None;self.connect_button['text']='Conectează USB'
                 self.error(item[1])
-        if self.close_pending and not self.busy:
+        if self.close_pending and not self.busy and not self.ai_busy:
             if self.robot:self.robot.close()
             if self.studio:self.studio.close()
             self.root.destroy();return
@@ -154,6 +210,42 @@ class App:
 
     def require_robot(self):
         if not self.robot:raise ValueError('Conectează robotul prin USB mai întâi')
+
+    def tool_changed(self,event=None):
+        if self.busy:
+            self.tool_mode.set(self.selected_mode);return
+        self.selected_mode=self.tool_mode.get();self.laser_safe.set(False)
+        laser=self.selected_mode=='Laser'
+        if laser:self.laser_frame.pack(fill='x',after=self.cal_label,pady=5)
+        else:self.laser_frame.pack_forget()
+        self.probe_button['text']='Probă laser STINS' if laser else 'Probă cu pixul ridicat'
+        self.run_button['text']='GRAVEAZĂ' if laser else 'DESENEAZĂ'
+        self.position_help['text']=('Laser: Z constant la focalizare; fascicul stins între linii.\nPune unealta în interiorul foii. Proba folosește același Z, cu laserul stins.\nNu muta accesoriile cât timp robotul lucrează.' if laser else 'Pix: contact la Z calibrat + corecție; ridicare între linii.\nPune pixul deasupra foii, în interior. La final revine la poziția înaltă de pornire.')
+
+    def save_laser_profile(self):
+        z=float(self.laser_z.get().replace(',','.'))
+        speed=float(self.laser_speed.get().replace(',','.'));power=float(self.laser_power.get().replace(',','.'))
+        if not all(math.isfinite(v) for v in (z,speed,power)) or speed<=0 or not 0<power<=100:
+            raise ValueError('Setări laser: Z finit, viteză pozitivă, putere peste 0 și maximum 100%')
+        DATA.mkdir(exist_ok=True)
+        (DATA/'laser.json').write_text(json.dumps(dict(z=z,speed=speed,power=power,samples=self.samples)),encoding='utf-8')
+        return z,speed,power
+
+    def capture_laser_z(self):
+        if self.busy:return
+        try:
+            self.require_robot()
+            if not self.cal:raise ValueError('Calibrează mai întâi zona XY a foii')
+        except Exception as e:self.error(e);return
+        def task():
+            self.robot.prepare_laser();self.robot.check_clear()
+            a=self.robot.pose();time.sleep(.15);b=self.robot.pose()
+            if math.dist(a[:3],b[:3])>.2:raise ValueError('Unealta se mișcă; eliberează Unlock')
+            return b[2]
+        def done(z):
+            self.laser_z.set(f'{z:.3f}');self.save_laser_profile()
+            self.status.set('Z laser memorat. Zona XY și Z-ul pixului sunt păstrate.')
+        self.background(task,done)
 
     def refresh_ports(self):
         devices=list(list_ports.comports())
@@ -224,6 +316,7 @@ class App:
     def new_cal(self):
         if self.busy:return
         self.samples=[];self.cal=None;self.paths=[];self.dry_key=None;self.fixed.set(False)
+        self.laser_z.set('');self.laser_safe.set(False)
         self.cal_label['text']='Calibrare nouă — atinge colțul 1';self.refresh_corners();self.paint()
 
     def load_cal(self):
@@ -233,13 +326,14 @@ class App:
             if data['schema']!=1:raise ValueError('Versiune de calibrare necunoscută')
             cal=Calibration([p[:3] for p in data['samples']]);Kinematics(data['samples'])
             self.cal=cal;self.samples=data['samples'];self.fingerprint=data['fingerprint'];self.dry_key=None
+            self.laser_z.set('');self.laser_safe.set(False)
             self.fixed.set(False);self.paths=[];self.refresh_corners()
             self.cal_label['text']=f'Încărcat: {cal.width:.1f} × {cal.height:.1f} mm\nZ contact = {cal.contact_z:.2f} mm (cel mai de sus)'
             if self.file:self.preview()
         except Exception as e:self.error(e)
 
     def choose_svg(self):
-        if self.busy:return
+        if self.ai_busy:return
         name=filedialog.askopenfilename(title='Alege SVG cu trasee',filetypes=[('SVG','*.svg')],initialdir=ROOT/'examples')
         if name:
             self.studio.cancel_capture();self.studio.show()
@@ -259,7 +353,7 @@ class App:
         self.file_label['text']='Fotografie în pregătire';self.paint()
 
     def new_photo(self):
-        if self.busy:return
+        if self.ai_busy or self.close_pending:return
         try:
             index=int(self.camera_index.get())
             if index<0:raise ValueError('Indexul camerei trebuie să fie cel puțin zero')
@@ -267,7 +361,7 @@ class App:
         except Exception as e:self.error(e)
 
     def generate_photo(self):
-        if self.busy:return
+        if self.ai_busy or self.close_pending:return
         photo=filedialog.askopenfilename(title='Alege fotografia (decupaj pătrat central)',filetypes=[('Fotografii','*.jpg *.jpeg *.png *.webp')])
         if not photo:return
         try:
@@ -275,12 +369,12 @@ class App:
         except Exception as e:self.error(e)
 
     def generate_captured(self,image):
-        if self.busy:return
+        if self.ai_busy or self.close_pending:return
         try:
             steps=int(self.ai_steps.get())
             if not 1<=steps<=100:raise ValueError('Pași AI: număr întreg între 1 și 100')
             photo=save_capture(image,ROOT/'captures')
-        except Exception as e:self.error(e);self.studio.confirm();return
+        except Exception as e:self.ai_error(e);self.studio.confirm();return
         use_local=local_mode()
         if not use_local:
             password=simpledialog.askstring('GB10 · toni@100.111.144.112','Parola SSH (nu se salvează):',show='*',parent=self.root)
@@ -289,16 +383,16 @@ class App:
         def task():
             if use_local:
                 from .local_ai import generate
-                return generate(photo,ROOT/'outputs',self.cancel,lambda text:self.events.put(('status',text)),steps=steps)
+                return generate(photo,ROOT/'outputs',self.ai_cancel,lambda text:self.events.put(('ai_status',text)),steps=steps)
             from .gb10 import generate
-            return generate(photo,ROOT/'outputs',password,self.cancel,lambda text:self.events.put(('status',text)),steps=steps)
+            return generate(photo,ROOT/'outputs',password,self.ai_cancel,lambda text:self.events.put(('ai_status',text)),steps=steps)
         def done(path):
             self.file=str(path);self.file_label['text']=path.name;self.dry_key=None
             self.preview()
-        self.background(task,done)
+            self.ai_status.set('Următorul portret este pregătit. După schimbarea foii apasă DESENEAZĂ / GRAVEAZĂ.')
+        self.background_ai(task,done)
 
     def preview(self):
-        if self.busy:return
         self.dry_key=None;self.paths=[]
         try:
             if not self.file:raise ValueError('Alege un SVG')
@@ -307,7 +401,7 @@ class App:
             self.paths,info=load_svg(self.file,self.preview_cal,v['margin'],v['join_gap'],v['brand'])
             if self.studio:self.studio.set_result(render_paths(self.paths,self.preview_cal.width,self.preview_cal.height))
             self.info['text']=f'{len(self.paths)} trasee ({info["joined"]} uniri, {info["removed"]} sub 1 mm eliminate) · {info["width"]:.1f} × {info["height"]:.1f} mm · {info["length"]:.0f} mm de linie\n'+ '\n'.join(info['warnings'])
-            self.status.set('Previzualizare pregătită. Poți apăsa DESENEAZĂ; proba ridicată este opțională.')
+            if not self.busy:self.status.set('Previzualizare pregătită. Poți porni lucrarea; proba este opțională.')
         except Exception as e:self.error(e)
         self.paint()
 
@@ -334,24 +428,39 @@ class App:
             if not self.fixed.get() or not self.clear.get():raise ValueError('Confirmă fixarea suportului și spațiul liber pentru pix și braț')
             if self.fingerprint!=self.current_fingerprint:raise ValueError('Robotul, versiunea sau offsetul uneltei diferă de calibrare. Recalibrează.')
             values=self.values()
+            use_laser=self.tool_mode.get()=='Laser'
+            if use_laser:
+                if not dry and not self.laser_safe.get():
+                    raise ValueError('Verifică alinierea XY, protecția laser și materialul înainte de gravare')
+                z,speed,power=self.save_laser_profile()
+                values.update(laser_z=z,speed=speed,laser_power=power)
+            values['tool_mode']='Laser' if use_laser else 'Pix'
             paths,info=load_svg(self.file,self.cal,values['margin'],values['join_gap'],values['brand'])
             key=json.dumps([self.samples,paths,values],sort_keys=True)
             self.paths=paths;self.paint()
         except Exception as e:self.error(e);return
         robot=self.robot;cal=self.cal;samples=list(self.samples);fingerprint=dict(self.fingerprint)
+        job_name=Path(self.file).parent.name+'/'+Path(self.file).name
+        self.active_job.set(f'În execuție: {values["tool_mode"]} · {job_name}')
+        self.laser_safe.set(False)
         self.progress['value']=0
         self.status.set('Verificare traseu…')
         def task():
             log={'time':time.strftime('%Y-%m-%d %H:%M:%S'),'dry':dry,'settings':values,'completed':0}
             prepared=False
             try:
+                if use_laser:
+                    prepared=True;robot.prepare_laser()
                 robot.check_clear()
                 if robot.rpc(60).hex()!=fingerprint['tool']:raise ValueError('Offsetul uneltei a fost schimbat. Recalibrează.')
                 start=robot.pose()
                 model=Kinematics(samples+[start])
-                plan=build_plan(cal,paths,start,values['lift'],values['offset'],dry)
+                def make_plan(grouped=False):
+                    if use_laser:return build_laser_plan(cal,paths,start,values['laser_z'],dry,grouped)
+                    return build_plan(cal,paths,start,values['lift'],values['offset'],dry,grouped)
+                plan=make_plan()
                 model.validate(plan,start,self.cancel)
-                operations=build_plan(cal,paths,start,values['lift'],values['offset'],dry,grouped=True)
+                operations=make_plan(True)
                 # CP controls XYZ, not wrist R. Screen both constant-R and
                 # constant-J4 behavior over the entire base-angle envelope.
                 bases=[model.inverse(p)[0] for p in [start[:4]]+plan]
@@ -359,17 +468,21 @@ class App:
                 for delta in (-span,span):
                     model.validate([p[:3]+[p[3]+delta] for p in plan],start,self.cancel)
                 log.update(start=start,targets=len(plan),drawing_z=cal.contact_z+values['offset'],travel_z=cal.contact_z+values['offset']+values['lift'],park_z=max(start[2],cal.contact_z+values['offset']+values['lift']))
+                if use_laser:log.update(drawing_z=values['laser_z'],travel_z=values['laser_z'],park_z=max(start[2],values['laser_z']))
                 if self.cancel.is_set():raise ValueError('Oprit')
-                self.events.put(('status',('Probă ridicată' if dry else 'Desenare')+f' · {len(plan)} segmente · STOP disponibil'))
+                action=('Probă laser stins' if dry else 'Gravare') if use_laser else ('Probă ridicată' if dry else 'Desenare')
+                self.events.put(('status',action+f' · {len(plan)} segmente · poți pregăti următoarea fotografie'))
                 prepared=True;robot.prepare(values['speed'],values['z_speed'])
                 total=sum(len(points) for _,points in operations)
                 log['targets']=total
-                log['motion_mode']='CP buffered / PTP vertical'
+                log['motion_mode']='CPLE laser / CP travel / PTP vertical' if use_laser else 'CP buffered / PTP vertical'
                 completed=0
                 for kind,points in operations:
                     if self.cancel.is_set():raise RobotError('Oprit de utilizator')
                     p=points[-1]
-                    if kind=='cp':
+                    if kind=='laser':
+                        robot.continuous_laser(points,values['laser_power'],self.cancel,lambda n:self.events.put(('progress',100*(completed+n)/total)))
+                    elif kind=='cp':
                         robot.continuous(points,self.cancel,lambda n:self.events.put(('progress',100*(completed+n)/total)))
                     else:
                         robot.move(p,self.cancel)
@@ -397,7 +510,8 @@ class App:
         def done(key):
             if dry:self.dry_key=key
             self.progress['value']=100
-            self.status.set('Probă terminată. Verifică fizic traseul; apoi poți apăsa DESENEAZĂ.' if dry else 'Finalizat · Pix ridicat deasupra foii, la poziția de pornire. Mută-l manual cu Unlock pentru schimbarea foii.')
+            self.active_job.set(f'Terminat: {values["tool_mode"]} · {job_name}')
+            self.status.set('Laser oprit · lucrare terminată, unealta la poziția de parcare.' if use_laser else ('Probă terminată.' if dry else 'Desen terminat · pix ridicat la poziția de pornire.'))
         self.background(task,done)
 
     def stop(self):
@@ -407,8 +521,8 @@ class App:
             self.background(self.robot.stop,lambda _:self.status.set('Controller oprit; coadă golită.'))
 
     def close(self):
-        if self.busy:
-            self.close_pending=True;self.stop()
+        if self.busy or self.ai_busy:
+            self.close_pending=True;self.cancel_ai();self.stop()
         else:
             self.root.after_cancel(self.poll_id)
             if self.robot:self.robot.close()

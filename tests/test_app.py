@@ -1,6 +1,8 @@
 """Simulated integration: real planner/importer/UI worker, no hardware port."""
 import tempfile
 import time
+import threading
+import gc
 import tkinter as tk
 import unittest
 from pathlib import Path
@@ -27,6 +29,91 @@ class FakeRobot:
 
 
 class AppTests(unittest.TestCase):
+    def setUp(self):
+        # Collect old Tk fixtures on the UI thread before worker allocations.
+        gc.collect()
+
+    def test_next_portrait_finishes_while_frozen_robot_job_keeps_running(self):
+        with tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)),patch('dobot_draw.app.messagebox.showerror') as error:
+            root=tk.Tk();root.withdraw();app=App(root)
+            gate=threading.Event();entered=threading.Event()
+            try:
+                model=Kinematics(test_core.KinematicTests().samples())
+                samples=[p+[0]+model.inverse(p+[0]) for p in [[190,-40,0],[270,-40,0],[270,40,0],[190,40,0]]]
+                class WaitingRobot(FakeRobot):
+                    def continuous(self,points,cancel,progress):
+                        entered.set();gate.wait(5)
+                        super().continuous(points,cancel,progress)
+                app.samples=samples;app.cal=Calibration([p[:3] for p in samples]);app.robot=WaitingRobot(model)
+                app.file=str(ROOT/'examples/patrat.svg');app.fingerprint=app.current_fingerprint={'tool':b'tool'.hex()}
+                app.clear.set(True);app.fixed.set(True);app.run(False)
+                self.assertTrue(entered.wait(3));self.assertTrue(app.busy)
+                active_name=app.active_job.get()
+                next_svg=ROOT/'examples/portrete/01_femeie_lineart.svg'
+                photo=Image.new('RGB',(40,40),'white');app.studio.photo=photo
+                app.invalidate_photo_result()
+                with patch('dobot_draw.app.local_mode',return_value=True),patch('dobot_draw.app.save_capture',return_value=Path(temp)/'p.png'),patch('dobot_draw.local_ai.generate',return_value=next_svg):
+                    app.generate_captured(photo)
+                    deadline=time.monotonic()+3
+                    while app.ai_busy and time.monotonic()<deadline:root.update();time.sleep(.01)
+                self.assertFalse(app.ai_busy);self.assertTrue(app.busy)
+                self.assertEqual(app.active_job.get(),active_name)
+                self.assertEqual(app.file,str(next_svg));self.assertEqual(app.studio.state,'result')
+                app.settings['offset'].set('20')
+                gate.set();deadline=time.monotonic()+5
+                while app.busy and time.monotonic()<deadline:root.update();time.sleep(.01)
+                self.assertFalse(app.busy);self.assertFalse(error.called)
+                self.assertTrue(app.robot.moves);self.assertLessEqual(max(p[2] for p in app.robot.moves),3)
+                self.assertEqual(len(list(Path(temp).glob('job-*.json'))),1)
+            finally:
+                gate.set();app.close()
+
+    def test_stop_robot_and_cancel_ai_are_independent(self):
+        with tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)):
+            root=tk.Tk();root.withdraw();app=App(root)
+            try:
+                app.busy=True;app.ai_busy=True
+                app.stop();self.assertTrue(app.cancel.is_set());self.assertFalse(app.ai_cancel.is_set())
+                app.cancel.clear();app.cancel_ai()
+                self.assertTrue(app.ai_cancel.is_set());self.assertFalse(app.cancel.is_set())
+            finally:app.busy=False;app.ai_busy=False;app.close()
+
+    def test_ai_failure_does_not_unlock_or_cancel_robot(self):
+        with tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)),patch('dobot_draw.app.messagebox.showerror'):
+            root=tk.Tk();root.withdraw();app=App(root)
+            try:
+                app.busy=True;app.ai_busy=True
+                app.events.put(('ai_error','ComfyUI indisponibil','test traceback'))
+                root.after_cancel(app.poll_id);app.poll()
+                self.assertTrue(app.busy);self.assertFalse(app.ai_busy);self.assertFalse(app.cancel.is_set())
+                self.assertIn('indisponibil',app.ai_status.get())
+            finally:app.busy=False;app.close()
+
+    def test_laser_probe_does_not_emit_and_engraving_uses_separate_z(self):
+        with tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)),patch('dobot_draw.app.messagebox.showerror') as error:
+            root=tk.Tk();root.withdraw();app=App(root)
+            try:
+                model=Kinematics(test_core.KinematicTests().samples())
+                samples=[p+[0]+model.inverse(p+[0]) for p in [[190,-40,0],[270,-40,0],[270,40,0],[190,40,0]]]
+                class LaserRobot(FakeRobot):
+                    strokes=[]
+                    def prepare_laser(self):pass
+                    def continuous_laser(self,points,power,cancel,progress):
+                        self.strokes.append((points,power));self.continuous(points,cancel,progress)
+                app.samples=samples;app.cal=Calibration([p[:3] for p in samples]);app.robot=LaserRobot(model)
+                app.file=str(ROOT/'examples/patrat.svg');app.fingerprint=app.current_fingerprint={'tool':b'tool'.hex()}
+                app.clear.set(True);app.fixed.set(True);app.tool_mode.set('Laser');app.tool_changed();app.laser_z.set('5')
+                def wait():
+                    deadline=time.monotonic()+5
+                    while app.busy and time.monotonic()<deadline:root.update();time.sleep(.01)
+                    self.assertFalse(app.busy)
+                app.run(True);wait();self.assertFalse(app.robot.strokes)
+                self.assertFalse(error.called)
+                app.laser_safe.set(True);app.run(False);wait();self.assertTrue(app.robot.strokes)
+                self.assertTrue(all(p[2]==5 for points,_ in app.robot.strokes for p in points))
+                self.assertEqual(app.cal.contact_z,0);self.assertFalse(error.called)
+            finally:app.close()
+
     def test_linux_local_photo_never_requests_ssh_password(self):
         with tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)),patch('dobot_draw.app.local_mode',return_value=True):
             root=tk.Tk();root.withdraw();app=App(root)
@@ -35,8 +122,8 @@ class AppTests(unittest.TestCase):
                 with patch('dobot_draw.app.save_capture',return_value=Path(temp)/'photo.png'),patch('dobot_draw.app.simpledialog.askstring') as password,patch('dobot_draw.local_ai.generate',return_value=ROOT/'examples/patrat.svg') as generate:
                     app.generate_captured(photo)
                     deadline=time.monotonic()+5
-                    while app.busy and time.monotonic()<deadline:root.update();time.sleep(.01)
-                    self.assertFalse(app.busy);generate.assert_called_once();password.assert_not_called()
+                    while app.ai_busy and time.monotonic()<deadline:root.update();time.sleep(.01)
+                    self.assertFalse(app.ai_busy);generate.assert_called_once();password.assert_not_called()
                     self.assertEqual(app.studio.state,'result');self.assertIsNone(app.robot)
             finally:app.close()
 
@@ -50,8 +137,8 @@ class AppTests(unittest.TestCase):
                 with patch('dobot_draw.app.local_mode',return_value=False),patch('dobot_draw.app.save_capture',return_value=Path(temp)/'photo.png') as save,patch('dobot_draw.app.simpledialog.askstring',return_value='test'),patch('dobot_draw.gb10.generate',return_value=svg) as generate:
                     app.generate_captured(photo)
                     deadline=time.monotonic()+5
-                    while app.busy and time.monotonic()<deadline:root.update();time.sleep(.01)
-                    self.assertFalse(app.busy);self.assertFalse(error.called)
+                    while app.ai_busy and time.monotonic()<deadline:root.update();time.sleep(.01)
+                    self.assertFalse(app.ai_busy);self.assertFalse(error.called)
                     self.assertTrue(save.called);self.assertTrue(generate.called)
                     self.assertEqual(app.studio.state,'result')
                     self.assertIs(app.studio.photo,photo)

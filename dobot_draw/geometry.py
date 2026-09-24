@@ -176,3 +176,49 @@ def build_plan(cal, paths, start, lift=3, offset=0, dry=False, grouped=False):
     if len(commands)>25000:
         raise ValueError('SVG prea complex: peste 25.000 de segmente. Simplifică desenul.')
     return operations if grouped else commands
+
+
+def build_laser_plan(cal, paths, start, laser_z, dry=False, grouped=False):
+    """Same paper XY, separate absolute focal Z; all travel is laser-off.
+
+    Never merge across a stroke boundary. First/final vertical moves are off,
+    and return travel stays above the drawing plane inside the paper holder.
+    """
+    if not math.isfinite(laser_z):
+        raise ValueError('Memorează un Z laser finit')
+    if not paths or any(len(p)<2 for p in paths):
+        raise ValueError('Laser: trasee insuficiente')
+    if not cal.inside(start):
+        raise ValueError('Adu unealta în interiorul foii, la cel puțin 2 mm de margini')
+    sx,sy,_=cal.local(start)
+    park_z=max(start[2],laser_z)
+    current=np.asarray(start[:3],dtype=float)
+    commands=[];operations=[]
+    def add(xyz,kind):
+        nonlocal current
+        target=np.asarray(xyz,dtype=float);distance=float(np.linalg.norm(target-current))
+        if distance<1e-8:return
+        count=max(1,math.ceil(distance/2));points=[]
+        for i in range(1,count+1):
+            p=current+(target-current)*i/count
+            if not cal.inside(p):raise ValueError('Traseul laser iese din interiorul foii')
+            points.append([*map(float,p),float(start[3])])
+        commands.extend(points)
+        if len(commands)>25000:raise ValueError('Laser: peste 25.000 de segmente')
+        operations.append((kind,points if kind!='ptp' else [points[-1]]))
+        current=target
+    def world(xy,z):return cal.world(*xy,z-cal.contact_z)
+    add(world((sx,sy),park_z),'ptp')
+    add(world(paths[0][0],park_z),'cp')
+    add(world(paths[0][0],laser_z),'ptp')
+    for path in paths:
+        add(world(path[0],laser_z),'cp')
+        stroke=[]
+        for xy in path[1:]:
+            before=len(operations)
+            add(world(xy,laser_z),'laser' if not dry else 'cp')
+            if len(operations)>before:stroke.extend(operations.pop()[1])
+        if stroke:operations.append(('cp' if dry else 'laser',stroke))
+    add([current[0],current[1],park_z],'ptp')
+    add(world((sx,sy),park_z),'cp')
+    return operations if grouped else commands

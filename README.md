@@ -41,7 +41,7 @@ Când scoți foi, suprafața coboară. Folosește o singură foaie pe un suport 
 
 ## Oprire și conexiune
 
-- Un singur job poate rula. Desenarea și deplasările orizontale folosesc CP cu până la 16 puncte în avans, la pas de cel mult 2 mm. Coada se pregătește înainte de pornire și se completează în timpul mișcării. Ridicarea/coborârea verticală folosește MOVL la viteza Z reglabilă, implicit 30 mm/s. O barieră de coadă confirmă sfârșitul liniei înainte de ridicare.
+- Un singur job robot poate rula; camera și un job AI pot pregăti simultan următorul portret. Lucrarea pornită păstrează traseele și setările inițiale. Desenarea și deplasările orizontale folosesc CP cu până la 16 puncte în avans, la pas de cel mult 2 mm. Coada se pregătește înainte de pornire și se completează în timpul mișcării. Ridicarea/coborârea verticală folosește MOVL la viteza Z reglabilă, implicit 30 mm/s. O barieră de coadă confirmă sfârșitul liniei înainte de ridicare.
 - STOP întrerupe jobul și solicită `ForceStop` plus golirea cozii. Nu se ridică automat pixul după eroare/oprire, pentru a nu adăuga mișcare într-o situație necunoscută.
 - La pierderea USB, oprirea prin software nu poate fi garantată; mișcările deja trimise pot continua (până la 16 puncte CP, circa 32 mm, sau întreaga mișcare verticală în curs). Nu se retransmite automat o mișcare ambiguă și nu se reia jobul după reconectare. STOP nu este oprire fizică de urgență.
 - Aplicația nu face homing, nu șterge alarme automat și nu actualizează firmware. După o eroare, citește și rezolvă cauza înainte de alt job.

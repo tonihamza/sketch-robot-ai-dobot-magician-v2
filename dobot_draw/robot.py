@@ -21,6 +21,7 @@ def packet(command, control=0, data=b''):
 
 class Robot:
     def __init__(self, port):
+        self.laser_session=False
         self.lock = threading.RLock()
         self.serial = serial.Serial()
         self.serial.port = port
@@ -110,13 +111,39 @@ class Robot:
     def stop(self):
         # Send both even if acknowledgments are unavailable; no automatic lift.
         errors = []
+        if getattr(self,'laser_session',False):
+            try:self.laser_off()
+            except Exception as e:errors.append(str(e))
         for cmd in (242, 245):
             try:
                 self.rpc(cmd, 1, allow_fault=True)
             except Exception as e:
                 errors.append(str(e))
+        if getattr(self,'laser_session',False):
+            try:self.laser_off()
+            except Exception as e:errors.append(str(e))
         if errors:
             raise RobotError('STOP neconfirmat prin USB. ' + '; '.join(errors))
+
+    def laser_off(self):
+        # Immediate OFF also attempted after a transport fault; never retry ON.
+        self.rpc(61,1,b'\x01\x00',allow_fault=True)
+
+    def prepare_laser(self):
+        self.laser_session=True
+        self.laser_off()
+        if self.rpc(61)!=b'\x01\x00':
+            raise RobotError('Controllerul nu confirmă laserul oprit')
+
+    def continuous_laser(self, points, power, cancel, progress=lambda n:None):
+        if not math.isfinite(power) or not 0<power<=100:
+            raise RobotError('Putere laser: peste 0 și maximum 100%')
+        if not getattr(self,'laser_session',False):
+            raise RobotError('Laserul nu a fost pregătit')
+        try:
+            self.continuous(points,cancel,progress,laser_power=power)
+        finally:
+            self.laser_off()
 
     def prepare(self, speed, z_speed=30):
         self.check_clear()
@@ -136,7 +163,7 @@ class Robot:
             raise RobotError('Parametrii mișcării continue CP nu au fost confirmați')
         self.rpc(240, 1)
 
-    def continuous(self, points, cancel, progress=lambda n: None):
+    def continuous(self, points, cancel, progress=lambda n: None, *, laser_power=None):
         """Bounded lookahead: prefill stopped queue, then refill while it runs.
 
         CP has XYZ only; the last float is reserved, not a speed setting.
@@ -145,7 +172,7 @@ class Robot:
         from collections import deque
         pending = deque()
         sent = completed = 0
-        total = len(points) + 1
+        total = len(points) + (2 if laser_power is not None else 1)
         running = False
         self.rpc(241, 1)
         stall_timeout = 15 + 2 / getattr(self, 'speed', 100)
@@ -163,7 +190,11 @@ class Robot:
                 if int.from_bytes(space, 'little') == 0:
                     break
                 if sent < len(points):
-                    raw = self.rpc(91, 3, struct.pack('<B4f', 1, *points[sent][:3], 0))
+                    raw = self.rpc(92 if laser_power is not None else 91, 3,
+                                   struct.pack('<B4f', 1, *points[sent][:3], laser_power or 0))
+                elif laser_power is not None and sent==len(points):
+                    # OFF is executed in the same controller queue, before WAIT.
+                    raw = self.rpc(61,3,b'\x01\x00')
                 else:
                     raw = self.rpc(110, 3, struct.pack('<I', 1))
                 if len(raw) != 8:
@@ -215,4 +246,6 @@ class Robot:
         raise RobotError('Mișcarea nu s-a terminat în timpul permis')
 
     def close(self):
-        self.serial.close()
+        try:
+            if getattr(self,'laser_session',False):self.stop()
+        finally:self.serial.close()
