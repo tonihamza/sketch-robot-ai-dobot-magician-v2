@@ -86,7 +86,9 @@ class Camera:
         cap=None
         try:
             import cv2
-            backend=cv2.CAP_DSHOW if sys.platform=='win32' else (cv2.CAP_V4L2 if sys.platform.startswith('linux') else cv2.CAP_ANY)
+            # On the GB10 OpenCV discovers V4L2 correctly through CAP_ANY,
+            # while forcing CAP_V4L2 can fail when PipeWire also monitors UVC.
+            backend=cv2.CAP_DSHOW if sys.platform=='win32' else cv2.CAP_ANY
             cap=cv2.VideoCapture(index,backend)
             if not cap.isOpened():raise RuntimeError('Camera nu se poate deschide. Verifică indexul și dacă este ocupată.')
             width,height=configure_camera(cap,cv2,index)
