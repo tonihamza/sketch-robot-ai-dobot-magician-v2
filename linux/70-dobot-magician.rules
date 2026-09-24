@@ -1,0 +1,2 @@
+# Magician USB serial bridge. Permissions apply to the local desktop session.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", GROUP="dialout", MODE="0660", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1", SYMLINK+="dobot-magician"

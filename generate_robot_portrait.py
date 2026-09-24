@@ -14,12 +14,13 @@ import mimetypes
 import tempfile
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from urllib.parse import urlencode
 
 import numpy as np
 import requests
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw
 
 
 DEFAULT_PROMPT = (
@@ -213,6 +214,11 @@ def trace_skeleton(skeleton: np.ndarray) -> list[list[tuple[float, float]]]:
             (row + dr, column + dc)
             for dr, dc in offsets
             if (row + dr, column + dc) in pixels
+            # A diagonal across an existing orthogonal connection is a
+            # shortcut, not a branch. Keeping it creates triangles along
+            # normal stair-step curves and fragments them into tiny paths.
+            and not (dr and dc and ((row + dr, column) in pixels
+                                    or (row, column + dc) in pixels))
         ]
 
     neighbours = {pixel: adjacent(pixel) for pixel in pixels}
@@ -235,13 +241,13 @@ def trace_skeleton(skeleton: np.ndarray) -> list[list[tuple[float, float]]]:
             previous, current = current, following
         return [(float(column), float(row)) for row, column in chain]
 
-    endpoints = [pixel for pixel in pixels if len(neighbours[pixel]) != 2]
+    endpoints = sorted(pixel for pixel in pixels if len(neighbours[pixel]) != 2)
     for start in endpoints:
         for first in neighbours[start]:
             if frozenset((start, first)) not in visited:
                 paths.append(walk(start, first))
 
-    for start in pixels:
+    for start in sorted(pixels):
         for first in neighbours[start]:
             if frozenset((start, first)) not in visited:
                 paths.append(walk(start, first))
@@ -295,13 +301,14 @@ def raster_to_svg(
     binary = grayscale < threshold
     skeleton = zhang_suen_thinning(binary)
 
-    preview = np.where(skeleton, 0, 255).astype(np.uint8)
-    Image.fromarray(preview, mode="L").save(preview_png)
-
     raw_paths = trace_skeleton(skeleton)
+    endpoints = Counter(point for path in raw_paths for point in (path[0], path[-1]))
     paths = []
     for path in raw_paths:
-        if path_length(path) < minimum_path_length:
+        # Keep short connectors between branches: deleting them opens gaps
+        # in an otherwise continuous outline. Isolated specks remain filtered.
+        bridge = endpoints[path[0]] > 1 and endpoints[path[-1]] > 1
+        if path_length(path) < minimum_path_length and not bridge:
             continue
         simplified = _rdp(path, simplify)
         if len(simplified) >= 2:
@@ -326,10 +333,17 @@ def raster_to_svg(
     )
     destination_svg.parent.mkdir(parents=True, exist_ok=True)
     destination_svg.write_text(svg, encoding="utf-8")
+    # Preview the paths actually exported, after filtering/simplification.
+    preview = Image.new('L', (width, height), 255)
+    drawing = ImageDraw.Draw(preview)
+    for path in paths:
+        drawing.line(path, fill=0, width=max(1, round(stroke_width)))
+    preview.save(preview_png)
     return len(paths), int(np.count_nonzero(skeleton))
 
 
 def main() -> None:
+    started = time.monotonic()
     parser = argparse.ArgumentParser(
         description="Generate square Qwen line art plus centerline SVG for a drawing robot."
     )
@@ -379,6 +393,7 @@ def main() -> None:
         prompt_id = queue_workflow(args.server, workflow)
         print(f"Queued ComfyUI job: {prompt_id}")
         item = wait_for_output(args.server, prompt_id, args.timeout)
+        print(f'AI elapsed: {time.monotonic()-started:.1f} seconds', flush=True)
         download_output(args.server, item, raw_result)
         normalize_square_png(raw_result, raw_output_png, args.size)
 
@@ -396,6 +411,7 @@ def main() -> None:
     print(f"Final line-only PNG: {output_png.resolve()}")
     print(f"Robot SVG: {output_svg.resolve()}")
     print(f"SVG contains {path_count} unfilled paths from {pixel_count} skeleton pixels")
+    print(f'Total elapsed: {time.monotonic()-started:.1f} seconds', flush=True)
 
 
 if __name__ == "__main__":
