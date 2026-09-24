@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from PIL import Image
-from dobot_draw.studio import Studio,center_square,save_capture,render_paths
+from dobot_draw.studio import Studio,center_square,save_capture,render_paths,camera_modes,configure_camera
 
 
 class FakeCamera:
@@ -16,6 +16,21 @@ class FakeCamera:
 
 
 class StudioTests(unittest.TestCase):
+    def test_linux_camera_uses_largest_advertised_mode(self):
+        listing="""[0]: 'YUYV' (YUYV 4:2:2)\n    Size: Discrete 640x480\n[1]: 'MJPG' (Motion-JPEG)\n    Size: Discrete 1920x1080\n    Size: Discrete 3840x2160\n"""
+        result=type('Result',(),{'returncode':0,'stdout':listing})()
+        with patch('dobot_draw.studio.sys.platform','linux'),patch('dobot_draw.studio.subprocess.run',return_value=result):
+            self.assertEqual(camera_modes(2)[0],(3840,2160,'MJPG'))
+
+    def test_camera_configuration_sets_native_mode_without_square_resize(self):
+        cap=type('Cap',(),{'values':{},'set':lambda self,key,value:self.values.__setitem__(key,value) or True,
+                          'get':lambda self,key:{3:3840,4:2160}[key]})()
+        cv2=type('CV',(),{'CAP_PROP_FOURCC':6,'CAP_PROP_FRAME_WIDTH':3,'CAP_PROP_FRAME_HEIGHT':4,
+                          'VideoWriter_fourcc':staticmethod(lambda *value:123)})
+        with patch('dobot_draw.studio.camera_modes',return_value=[(3840,2160,'MJPG')]):
+            self.assertEqual(configure_camera(cap,cv2,0),(3840,2160))
+        self.assertEqual(cap.values[3],3840);self.assertEqual(cap.values[4],2160)
+
     def test_centre_crop_is_exact_and_does_not_modify_input(self):
         image=Image.new('RGB',(8,4),'red')
         for x in range(2,6):

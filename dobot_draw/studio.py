@@ -1,5 +1,7 @@
 """Camera preview and capture workflow; no robot commands."""
 import math
+import re
+import subprocess
 import sys
 import threading
 import time
@@ -14,6 +16,57 @@ def center_square(image):
     image=ImageOps.exif_transpose(image).convert('RGB')
     w,h=image.size;n=min(w,h)
     return image.crop(((w-n)//2,(h-n)//2,(w-n)//2+n,(h-n)//2+n))
+
+
+def camera_modes(index):
+    """Return V4L2 discrete modes, largest first; empty means probe via OpenCV."""
+    if not sys.platform.startswith('linux'):
+        return []
+    device=index if isinstance(index,str) and index.startswith('/dev/') else f'/dev/video{index}'
+    try:
+        result=subprocess.run(['v4l2-ctl','--device',device,'--list-formats-ext'],
+                              capture_output=True,text=True,timeout=5)
+    except (OSError,subprocess.TimeoutExpired):
+        return []
+    if result.returncode:
+        return []
+    pixel=None;modes=[]
+    for line in result.stdout.splitlines():
+        found=re.search(r"'([^']+)'",line)
+        if found and ('Pixel Format' in line or re.search(r'^\s*\[\d+\]:',line)):
+            pixel=found.group(1)
+        size=re.search(r'Size:\s+Discrete\s+(\d+)x(\d+)',line)
+        if size and pixel:
+            width,height=map(int,size.groups())
+            modes.append((width,height,pixel))
+    # At equal resolution MJPG generally permits a better frame rate than raw YUYV.
+    priority={'MJPG':2,'JPEG':2,'YUYV':1}
+    return sorted(set(modes),key=lambda mode:(mode[0]*mode[1],priority.get(mode[2],0)),reverse=True)
+
+
+def configure_camera(cap,cv2,index):
+    """Select the camera's largest advertised frame without resizing it."""
+    modes=camera_modes(index)
+    if modes:
+        width,height,pixel=modes[0]
+        if len(pixel)==4:
+            cap.set(cv2.CAP_PROP_FOURCC,cv2.VideoWriter_fourcc(*pixel))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT,height)
+    else:
+        # V4L2 clamps an oversized TRY_FMT request to the largest supported mode.
+        # This also provides a useful fallback when v4l2-ctl is unavailable.
+        if sys.platform.startswith('linux'):
+            cap.set(cv2.CAP_PROP_FOURCC,cv2.VideoWriter_fourcc(*'MJPG'))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH,16384)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT,16384)
+        else:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH,1920)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT,1080)
+    width=round(cap.get(cv2.CAP_PROP_FRAME_WIDTH));height=round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if width<=0 or height<=0:
+        raise RuntimeError('Camera nu a confirmat rezoluția video.')
+    return width,height
 
 
 def render_paths(paths,width,height,size=900):
@@ -33,9 +86,10 @@ class Camera:
         cap=None
         try:
             import cv2
-            cap=cv2.VideoCapture(index,cv2.CAP_DSHOW if sys.platform=='win32' else cv2.CAP_ANY)
+            backend=cv2.CAP_DSHOW if sys.platform=='win32' else (cv2.CAP_V4L2 if sys.platform.startswith('linux') else cv2.CAP_ANY)
+            cap=cv2.VideoCapture(index,backend)
             if not cap.isOpened():raise RuntimeError('Camera nu se poate deschide. Verifică indexul și dacă este ocupată.')
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH,1280);cap.set(cv2.CAP_PROP_FRAME_HEIGHT,720)
+            width,height=configure_camera(cap,cv2,index)
             failures=0
             while not self.stop.is_set():
                 ok,frame=cap.read()
@@ -44,6 +98,8 @@ class Camera:
                     if failures>15:raise RuntimeError('Camera nu mai transmite imagini.')
                     self.stop.wait(.05);continue
                 failures=0
+                # Keep the full native frame from the camera and crop only its
+                # central square. No stretch/downscale is applied before saving.
                 image=center_square(Image.fromarray(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)))
                 with self.lock:self.image=image;self.stamp=time.monotonic()
                 self.stop.wait(.015)
@@ -98,7 +154,7 @@ class Studio:
         if self.retired:
             self.on_error('Camera se închide; încearcă din nou peste o secundă.');return
         self.photo=None;self.result=None;self.state='live';self.camera=Camera(index)
-        self.message.set('Camera · decupaj pătrat central');self.show()
+        self.message.set('Camera · rezoluție maximă · decupaj pătrat central');self.show()
         self.panel('Pregătit pentru fotografie?', [('Pornește timerul · 5 secunde',self.start_timer),('Anulează',self.cancel_capture)])
 
     def start_timer(self):
