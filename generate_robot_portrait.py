@@ -367,11 +367,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate square Qwen line art plus centerline SVG for a drawing robot."
     )
-    parser.add_argument("input", type=Path, help="Photograph containing one person")
+    parser.add_argument("input", type=Path, help="Reference photograph; --people selects 1 to 3 foreground subjects")
     parser.add_argument("output_prefix", type=Path, help="Output path without extension")
     parser.add_argument("--server", default="http://127.0.0.1:8188")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
-    parser.add_argument("--people", type=int, choices=(1, 2, 3), default=1)
+    parser.add_argument("--people", type=int, choices=(1, 2, 3), default=1,
+                        help="Number of foreground people to include (default: 1)")
     parser.add_argument("--seed", type=int, default=6834410345697826643)
     parser.add_argument("--steps", type=int, default=40)
     parser.add_argument("--size", type=int, default=1328)
