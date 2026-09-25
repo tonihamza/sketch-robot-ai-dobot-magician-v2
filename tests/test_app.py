@@ -154,6 +154,55 @@ class AppTests(unittest.TestCase):
                 self.assertTrue(app.ai_cancel.is_set());self.assertFalse(app.cancel.is_set())
             finally:app.busy=False;app.ai_busy=False;app.close()
 
+    def test_new_photo_generation_survives_laser_finish_stop_and_error(self):
+        for ending in ('finished','stopped','error'):
+            with self.subTest(ending=ending),tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)),patch('dobot_draw.app.messagebox.showerror'):
+                gc.collect()
+                root=tk.Tk();root.withdraw();app=App(root)
+                robot_gate=threading.Event();robot_entered=threading.Event();ai_gate=threading.Event();ai_entered=threading.Event()
+                try:
+                    model=Kinematics(test_core.KinematicTests().samples())
+                    samples=[p+[0]+model.inverse(p+[0]) for p in [[190,-40,0],[270,-40,0],[270,40,0],[190,40,0]]]
+                    class LaserRobot(FakeRobot):
+                        def prepare_laser(self):pass
+                        def continuous(self,points,cancel,progress):
+                            robot_entered.set();robot_gate.wait(5)
+                            if ending=='error':raise RuntimeError('Simulated robot failure')
+                            if cancel.is_set():raise RuntimeError('Stopped by user')
+                            super().continuous(points,cancel,progress)
+                        def continuous_laser(self,points,power,cancel,progress):self.continuous(points,cancel,progress)
+                    app.robot=LaserRobot(model);app.samples=samples;app.cal=Calibration([p[:3] for p in samples])
+                    app.fingerprint=app.current_fingerprint={'tool':b'tool'.hex()}
+                    app.file=str(ROOT/'examples/patrat.svg');app.fixed.set(True);app.clear.set(True)
+                    app.tool_mode.set('Laser');app.tool_changed();app.laser_z.set('5');app.laser_safe.set(True)
+                    app.run(False);self.assertTrue(robot_entered.wait(2))
+                    next_svg=ROOT/'examples/portrete/01_femeie_lineart.svg'
+                    photo=Image.new('RGB',(40,40),'blue')
+                    app.studio.result=Image.new('RGB',(40,40),'red')
+                    def generate(source,dest,cancel,status,**kwargs):
+                        ai_entered.set();ai_gate.wait(5)
+                        self.assertFalse(cancel.is_set())
+                        return next_svg
+                    with patch('dobot_draw.app.local_mode',return_value=True),patch('dobot_draw.app.save_capture',return_value=Path(temp)/'new-photo.png'),patch('dobot_draw.local_ai.generate',side_effect=generate):
+                        app.generate_captured(photo);self.assertTrue(ai_entered.wait(2))
+                        self.assertIsNone(app.file);self.assertIsNone(app.studio.result)
+                        if ending=='stopped':app.stop()
+                        robot_gate.set();deadline=time.monotonic()+3
+                        while app.busy and time.monotonic()<deadline:root.update();time.sleep(.01)
+                        self.assertFalse(app.busy);self.assertTrue(app.ai_busy)
+                        self.assertFalse(app.ai_cancel.is_set());self.assertEqual(app.studio.state,'generating')
+                        app.preview();app.run(False)
+                        self.assertIsNone(app.file);self.assertEqual(app.studio.state,'generating')
+                        moves=len(app.robot.moves)
+                        ai_gate.set();deadline=time.monotonic()+3
+                        while app.ai_busy and time.monotonic()<deadline:root.update();time.sleep(.01)
+                        self.assertFalse(app.ai_busy);self.assertEqual(app.file,str(next_svg))
+                        self.assertEqual(app.studio.state,'result');self.assertEqual(app.studio.photo.getpixel((0,0)),(0,0,255))
+                        self.assertIsNotNone(app.studio.result);self.assertEqual(len(app.robot.moves),moves)
+                        self.assertIn('completed',(Path(temp)/'ai-events.jsonl').read_text())
+                finally:
+                    robot_gate.set();ai_gate.set();app.close();app=None;root=None
+
     def test_ai_failure_does_not_unlock_or_cancel_robot(self):
         with tempfile.TemporaryDirectory() as temp,patch('dobot_draw.app.DATA',Path(temp)),patch('dobot_draw.app.messagebox.showerror'):
             root=tk.Tk();root.withdraw();app=App(root)
@@ -217,7 +266,7 @@ class AppTests(unittest.TestCase):
                     self.assertFalse(app.ai_busy);self.assertFalse(error.called)
                     self.assertTrue(save.called);self.assertTrue(generate.called)
                     self.assertEqual(app.studio.state,'result')
-                    self.assertIs(app.studio.photo,photo)
+                    self.assertEqual(app.studio.photo.tobytes(),photo.tobytes())
                     self.assertIsNotNone(app.studio.result)
                     self.assertIsNone(app.robot);self.assertIsNone(app.cal)
                     self.assertTrue(app.paths)

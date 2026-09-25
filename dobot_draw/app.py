@@ -30,6 +30,7 @@ class App:
         self.file=None;self.fingerprint=None;self.dry_key=None;self.close_pending=False
         self.events=queue.Queue();self.cancel=threading.Event()
         self.ai_busy=False;self.ai_cancel=threading.Event()
+        self.ai_photo=None;self.result_photo=None
         self.ai_status=tk.StringVar(value='AI liber · poți pregăti următorul portret în timpul desenării')
         self.active_job=tk.StringVar(value='Robot: nicio lucrare în execuție')
         self.tool_mode=tk.StringVar(value='Pix');self.selected_mode='Pix'
@@ -159,11 +160,21 @@ class App:
 
     def cancel_ai(self):
         if self.ai_busy:
+            self.log_ai('cancel_requested')
             self.ai_cancel.set();self.ai_status.set('Anulare AI solicitată; robotul continuă lucrarea curentă.')
+
+    def log_ai(self,event,**details):
+        try:
+            DATA.mkdir(exist_ok=True)
+            record=dict(time=time.time(),event=event,photo=str(self.ai_photo) if self.ai_photo else None,robot_busy=self.busy,**details)
+            with (DATA/'ai-events.jsonl').open('a',encoding='utf-8') as log:
+                log.write(json.dumps(record,ensure_ascii=False)+'\n')
+        except OSError:pass  # A diagnostic log must not interrupt either job.
 
     def background_ai(self,task,done):
         if self.ai_busy:return
-        self.ai_busy=True;self.ai_cancel.clear()
+        self.ai_busy=True;self.ai_cancel=threading.Event()
+        self.log_ai('started')
         def worker():
             try:self.events.put(('ai_done',done,task()))
             except Exception as e:self.events.put(('ai_error',str(e),traceback.format_exc()))
@@ -191,10 +202,11 @@ class App:
             elif item[0]=='ai_done':
                 self.ai_busy=False
                 if not self.close_pending:
-                    try:item[1](item[2])
-                    except Exception as e:self.ai_error(e)
+                    try:item[1](item[2]);self.log_ai('completed',svg=str(item[2]))
+                    except Exception as e:self.log_ai('result_error',error=str(e));self.ai_error(e)
             elif item[0]=='ai_error':
                 self.ai_busy=False
+                self.log_ai('failed',error=item[1])
                 DATA.mkdir(exist_ok=True)
                 with (DATA/'errors.log').open('a',encoding='utf-8') as f:f.write(item[2]+'\n')
                 if not self.close_pending:self.ai_error(item[1])
@@ -382,6 +394,7 @@ class App:
         name=filedialog.askopenfilename(title='Alege SVG cu trasee',filetypes=[('SVG','*.svg')],initialdir=ROOT/'examples')
         if name:
             self.studio.cancel_capture();self.studio.show()
+            self.result_photo=None;self.ai_photo=None
             self.file=name;self.file_label['text']=Path(name).name;self.preview()
 
     def values(self):
@@ -394,7 +407,9 @@ class App:
         return v
 
     def invalidate_photo_result(self):
-        self.file=None;self.paths=[];self.dry_key=None
+        self.file=None;self.paths=[];self.dry_key=None;self.result_photo=None
+        if self.studio:self.studio.result=None;self.studio.paint()
+        self.info['text']='Fotografie nouă în pregătire · SVG-ul va apărea după generare.'
         self.file_label['text']='Fotografie în pregătire';self.paint()
 
     def new_photo(self):
@@ -424,6 +439,10 @@ class App:
         if not use_local:
             password=simpledialog.askstring('GB10 · toni@100.111.144.112','Parola SSH (nu se salvează):',show='*',parent=self.root)
             if password is None:self.studio.confirm();return
+        source_image=image.copy()
+        self.invalidate_photo_result();self.ai_photo=photo
+        self.studio.photo=source_image
+        self.file_label['text']=f'În generare: {photo.name}'
         self.studio.generating()
         def task():
             if use_local:
@@ -432,23 +451,31 @@ class App:
             from .gb10 import generate
             return generate(photo,ROOT/'outputs',password,self.ai_cancel,lambda text:self.events.put(('ai_status',text)),steps=steps)
         def done(path):
-            self.file=str(path);self.file_label['text']=path.name;self.dry_key=None
-            self.preview()
+            self.result_photo=source_image;self.studio.photo=source_image
+            self.file=str(path);self.file_label['text']=f'{path.parent.name}/{path.name}';self.dry_key=None
+            self.preview(raise_errors=True)
             self.ai_status.set('Următorul portret este pregătit. După schimbarea foii apasă DESENEAZĂ / GRAVEAZĂ.')
         self.background_ai(task,done)
 
-    def preview(self):
+    def preview(self,*,raise_errors=False):
+        if self.ai_busy:
+            self.ai_status.set('Generarea fotografiei continuă; setările se vor aplica noului SVG.');return False
         self.dry_key=None;self.paths=[]
         try:
             if not self.file:raise ValueError('Alege un SVG')
             v=self.values()
             self.preview_cal=self.cal or Calibration([[190,-40,0],[270,-40,0],[270,40,0],[190,40,0]])
             self.paths,info=load_svg(self.file,self.preview_cal,v['margin'],v['join_gap'],v['brand'])
-            if self.studio:self.studio.set_result(render_paths(self.paths,self.preview_cal.width,self.preview_cal.height))
+            if self.studio:
+                if self.result_photo is not None:self.studio.photo=self.result_photo
+                self.studio.set_result(render_paths(self.paths,self.preview_cal.width,self.preview_cal.height))
             self.info['text']=f'{len(self.paths)} trasee ({info["joined"]} uniri, {info["removed"]} sub 1 mm eliminate) · {info["width"]:.1f} × {info["height"]:.1f} mm · {info["length"]:.0f} mm de linie\n'+ '\n'.join(info['warnings'])
             if not self.busy:self.status.set('Previzualizare pregătită. Poți porni lucrarea; proba este opțională.')
-        except Exception as e:self.error(e)
-        self.paint()
+        except Exception as e:
+            self.paint()
+            if raise_errors:raise
+            self.error(e);return False
+        self.paint();return True
 
     def paint(self):
         c=self.canvas;c.delete('all')
@@ -467,6 +494,8 @@ class App:
 
     def run(self,dry):
         if self.busy:return
+        if self.ai_busy:
+            self.status.set('Așteaptă noul SVG; generarea fotografiei este încă în curs.');return
         try:
             self.require_robot()
             if not self.cal or not self.file:raise ValueError('Calibrează foaia și alege un SVG')
@@ -558,6 +587,9 @@ class App:
             self.progress['value']=100
             self.active_job.set(f'Terminat: {values["tool_mode"]} · {job_name}')
             self.status.set('Laser oprit · lucrare terminată, unealta la poziția de parcare.' if use_laser else ('Probă terminată.' if dry else 'Desen terminat · pix ridicat la poziția de pornire.'))
+            if self.ai_busy:
+                self.log_ai('robot_finished_ai_continues')
+                self.status.set(self.status.get()+' Generarea noii fotografii continuă.')
         self.background(task,done)
 
     def stop(self):

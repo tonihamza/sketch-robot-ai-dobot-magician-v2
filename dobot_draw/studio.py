@@ -38,21 +38,29 @@ def camera_modes(index):
         size=re.search(r'Size:\s+Discrete\s+(\d+)x(\d+)',line)
         if size and pixel:
             width,height=map(int,size.groups())
-            modes.append((width,height,pixel))
+            modes.append((width,height,pixel,0.0))
+        rate=re.search(r'\(([\d.]+) fps\)',line)
+        if rate and modes:
+            modes[-1]=(*modes[-1][:3],max(modes[-1][3],float(rate.group(1))))
     # At equal resolution MJPG generally permits a better frame rate than raw YUYV.
     priority={'MJPG':2,'JPEG':2,'YUYV':1}
-    return sorted(set(modes),key=lambda mode:(mode[0]*mode[1],priority.get(mode[2],0)),reverse=True)
+    return sorted(set(modes),key=lambda mode:(mode[0]*mode[1],priority.get(mode[2],0),mode[3]),reverse=True)
 
 
-def configure_camera(cap,cv2,index):
-    """Select the camera's largest advertised frame without resizing it."""
-    modes=camera_modes(index)
+def configure_camera(cap,cv2,index,*,purpose='photo',modes=None):
+    """Full sensor frames: fast native video for preview, maximum for capture."""
+    if modes is None:modes=camera_modes(index)
+    requested=None
     if modes:
-        width,height,pixel=modes[0]
+        candidates=[mode for mode in modes if mode[3]>=20] if purpose=='preview' else modes
+        mode=(candidates or modes)[0]
+        width,height,pixel,fps=mode
+        requested=(width,height)
         if len(pixel)==4:
             cap.set(cv2.CAP_PROP_FOURCC,cv2.VideoWriter_fourcc(*pixel))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT,height)
+        if fps:cap.set(cv2.CAP_PROP_FPS,fps)
     else:
         # V4L2 clamps an oversized TRY_FMT request to the largest supported mode.
         # This also provides a useful fallback when v4l2-ctl is unavailable.
@@ -63,9 +71,13 @@ def configure_camera(cap,cv2,index):
         else:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH,1920)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT,1080)
+    # Avoid a backlog of old frames, especially in a native 2 fps still mode.
+    cap.set(cv2.CAP_PROP_BUFFERSIZE,1)
     width=round(cap.get(cv2.CAP_PROP_FRAME_WIDTH));height=round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     if width<=0 or height<=0:
         raise RuntimeError('Camera nu a confirmat rezoluția video.')
+    if requested and (width,height)!=requested:
+        raise RuntimeError(f'Camera nu a acceptat rezoluția {requested[0]}×{requested[1]} (a raportat {width}×{height}).')
     return width,height
 
 
@@ -80,6 +92,8 @@ class Camera:
     def __init__(self,index):
         self.stop=threading.Event();self.lock=threading.Lock()
         self.image=None;self.stamp=0;self.error=None
+        self.capture_requested=threading.Event();self.captured=None
+        self.preview_size=None;self.capture_size=None;self.frames=0;self.started_at=None
         self.thread=threading.Thread(target=self._read,args=(index,),daemon=True);self.thread.start()
 
     def _read(self,index):
@@ -91,9 +105,22 @@ class Camera:
             backend=cv2.CAP_DSHOW if sys.platform=='win32' else cv2.CAP_ANY
             cap=cv2.VideoCapture(index,backend)
             if not cap.isOpened():raise RuntimeError('Camera nu se poate deschide. Verifică indexul și dacă este ocupată.')
-            width,height=configure_camera(cap,cv2,index)
+            modes=camera_modes(index)
+            self.preview_size=configure_camera(cap,cv2,index,purpose='preview',modes=modes)
             failures=0
             while not self.stop.is_set():
+                if self.capture_requested.is_set():
+                    self.capture_size=configure_camera(cap,cv2,index,modes=modes)
+                    # Reconfiguration restarts the stream. Discard one frame;
+                    # never save the old preview as a maximum-resolution photo.
+                    cap.read()
+                    ok,frame=cap.read()
+                    if self.stop.is_set():return
+                    if not ok or (frame.shape[1],frame.shape[0])!=self.capture_size:
+                        raise RuntimeError('Camera nu a livrat fotografia la rezoluția de captură.')
+                    image=center_square(Image.fromarray(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)))
+                    with self.lock:self.captured=image
+                    return
                 ok,frame=cap.read()
                 if not ok:
                     failures+=1
@@ -103,14 +130,20 @@ class Camera:
                 # Keep the full native frame from the camera and crop only its
                 # central square. No stretch/downscale is applied before saving.
                 image=center_square(Image.fromarray(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)))
-                with self.lock:self.image=image;self.stamp=time.monotonic()
-                self.stop.wait(.015)
+                with self.lock:
+                    self.image=image;self.stamp=time.monotonic();self.frames+=1
+                    if self.started_at is None:self.started_at=self.stamp
         except Exception as exc:self.error=str(exc)
         finally:
             if cap is not None:cap.release()
 
     def snapshot(self):
         with self.lock:return self.image,self.stamp
+
+    def request_capture(self):self.capture_requested.set()
+
+    def capture_result(self):
+        with self.lock:return self.captured
 
     def close(self):self.stop.set()
 
@@ -120,6 +153,7 @@ class Studio:
         self.root=root;self.on_save=on_save;self.on_new=on_new;self.on_error=on_error
         self.camera=None;self.retired=[];self.photo=None;self.result=None
         self.state='empty';self.deadline=None;self.dialog=None;self.closed=False
+        self.last_frame_stamp=None;self.last_countdown=None;self.capture_deadline=None
         self.window=tk.Toplevel(root);self.window.title('LAPTOP AID · Cameră și portret')
         self.window.geometry('1000x640');self.window.minsize(420,350)
         self.window.protocol('WM_DELETE_WINDOW',self.hide)
@@ -135,6 +169,7 @@ class Studio:
         if self.camera:
             self.camera.close();self.retired.append(self.camera);self.camera=None
         self.deadline=None
+        self.capture_deadline=None
 
     def clear_dialog(self):
         if self.dialog and self.dialog.winfo_exists():self.dialog.destroy()
@@ -156,7 +191,8 @@ class Studio:
         if self.retired:
             self.on_error('Camera se închide; încearcă din nou peste o secundă.');return
         self.photo=None;self.result=None;self.state='live';self.camera=Camera(index)
-        self.message.set('Camera · rezoluție maximă · decupaj pătrat central');self.show()
+        self.last_frame_stamp=None;self.last_countdown=None
+        self.message.set('Camera · previzualizare fluidă · fotografia se salvează la rezoluția maximă, cu decupaj pătrat central');self.show()
         self.panel('Pregătit pentru fotografie?', [('Pornește timerul · 5 secunde',self.start_timer),('Anulează',self.cancel_capture)])
 
     def start_timer(self):
@@ -174,13 +210,24 @@ class Studio:
                 error=self.camera.error;self.cancel_capture();self.message.set(error);self.on_error(error)
             else:
                 image,stamp=self.camera.snapshot()
-                if image is not None:self.photo=image
+                changed=stamp!=self.last_frame_stamp
+                if image is not None and changed:self.photo=image;self.last_frame_stamp=stamp
                 if self.deadline and time.monotonic()>=self.deadline:
                     if image is None or time.monotonic()-stamp>1:
                         self.cancel_capture();self.on_error('Fotografia nu a fost făcută: camera nu mai transmite.')
                     else:
-                        self.photo=image.copy();self.stop_camera();self.confirm()
-                if self.state in ('live','countdown'):self.paint()
+                        self.deadline=None;self.state='capturing';self.capture_deadline=time.monotonic()+8
+                        self.camera.request_capture()
+                        self.message.set('Captură la rezoluția maximă…');self.paint()
+                if self.state=='capturing' and self.camera:
+                    captured=self.camera.capture_result()
+                    if captured is not None:
+                        self.photo=captured;self.stop_camera();self.confirm()
+                    elif time.monotonic()>=self.capture_deadline:
+                        self.cancel_capture();self.on_error('Camera nu a livrat fotografia la rezoluția maximă în timp util. Reîncearcă.')
+                countdown=math.ceil(self.deadline-time.monotonic()) if self.deadline else None
+                if self.state in ('live','countdown') and (changed or countdown!=self.last_countdown):self.paint()
+                self.last_countdown=countdown
         self.tick_id=self.root.after(40,self.tick)
 
     def selected(self,filename):
@@ -197,11 +244,11 @@ class Studio:
         self.on_save(self.photo.copy())
 
     def generating(self):
-        self.state='generating';self.message.set('Fotografie salvată · se generează portretul pe GB10…');self.paint()
+        self.result=None;self.state='generating';self.message.set('Fotografie salvată · se generează portretul pe GB10…');self.paint()
 
     def set_result(self,image):
         self.stop_camera();self.clear_dialog();self.result=image;self.state='result'
-        self.message.set('Original / portret pregătit pentru robot · apasă DESENEAZĂ în fereastra principală.')
+        self.message.set('Original / portret pregătit pentru robot · apasă DESENEAZĂ / GRAVEAZĂ în fereastra principală.')
         self.show();self.paint()
 
     def cancel_capture(self):
@@ -209,7 +256,7 @@ class Studio:
         self.state='empty';self.photo=None;self.result=None;self.message.set('Captură anulată.');self.paint()
 
     def hide(self):
-        if self.state in ('live','countdown'):self.cancel_capture()
+        if self.state in ('live','countdown','capturing'):self.cancel_capture()
         self.window.withdraw()
 
     def paint(self):
@@ -223,7 +270,8 @@ class Studio:
             cx=(i+.5)*w/len(images);cy=h/2+10
             c.create_text(cx,18,text=label,fill='white',font=('Segoe UI',13))
             if img is not None:
-                display=ImageTk.PhotoImage(img.resize((size,size),Image.Resampling.LANCZOS),master=self.window)
+                resample=Image.Resampling.BILINEAR if self.state in ('live','countdown','capturing') else Image.Resampling.LANCZOS
+                display=ImageTk.PhotoImage(img.resize((size,size),resample),master=self.window)
                 self.photos.append(display);c.create_image(cx,cy,image=display)
             else:c.create_text(cx,cy,text='Camera / fotografia va apărea aici',fill='#b9c8d4')
         if self.deadline:
