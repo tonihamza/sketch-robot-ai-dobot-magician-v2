@@ -249,13 +249,12 @@ class AppTests(unittest.TestCase):
             root=tk.Tk();root.withdraw();app=App(root)
             try:
                 photo=Image.new('RGB',(40,40),'white');app.studio.photo=photo
-                app.ai_people.set('3')
                 with patch('dobot_draw.app.save_capture',return_value=Path(temp)/'photo.png'),patch('dobot_draw.app.simpledialog.askstring') as password,patch('dobot_draw.local_ai.generate',return_value=ROOT/'examples/patrat.svg') as generate:
                     app.generate_captured(photo)
                     deadline=time.monotonic()+5
                     while app.ai_busy and time.monotonic()<deadline:root.update();time.sleep(.01)
                     self.assertFalse(app.ai_busy);generate.assert_called_once();password.assert_not_called()
-                    self.assertEqual(generate.call_args.kwargs['people'],3)
+                    self.assertNotIn('people',generate.call_args.kwargs)
                     self.assertEqual(app.studio.state,'result');self.assertIsNone(app.robot)
             finally:app.close()
 

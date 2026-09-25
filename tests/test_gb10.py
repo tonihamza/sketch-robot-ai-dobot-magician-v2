@@ -26,14 +26,14 @@ class GB10Tests(unittest.TestCase):
                     with self.assertRaises(RuntimeError):generate(photo,root/'output','test-password',event,lambda _:None)
                     sftp.get.assert_not_called()
                 else:
-                    result=generate(photo,root/'output','test-password',event,lambda _:None,people=2)
+                    result=generate(photo,root/'output','test-password',event,lambda _:None)
                     self.assertTrue(result.is_file())
                     self.assertEqual(len(sftp.get.call_args_list),3)
                     command=client.exec_command.call_args.args[0]
                     self.assertNotIn('test-password',command)
                     self.assertNotIn(str(photo),command)
                     self.assertIn('--paper-mm 80',command)
-                    self.assertIn('--people 2',command)
+                    self.assertNotIn('--people',command)
                     self.assertIn('/home/toni/dobot-studio/generate_robot_portrait.py',command)
                     self.assertIn('--steps 24',command)
                 client.close.assert_called_once()

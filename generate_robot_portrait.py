@@ -24,8 +24,8 @@ from PIL import Image, ImageOps, ImageDraw
 
 
 DEFAULT_PROMPT = (
-    "Create a centered square head-and-shoulders line portrait of the selected foreground people "
-    "in the reference photograph. Preserve each person's recognizable facial "
+    "Create a centered square head-and-shoulders line portrait of the person "
+    "in the reference photograph. Preserve the person's recognizable facial "
     "proportions, hairstyle and expression. The generated image itself must "
     "contain thin black lines only on a completely white background. Use "
     "clean, sparse, continuous, uniform-width centerline strokes. Every facial "
@@ -35,29 +35,13 @@ DEFAULT_PROMPT = (
     "No individual eyebrow hairs, short dashes, interior strokes, hatching, "
     "shading, filled eyebrows, overlapping lines or repeated tracing. "
     "Draw pupils, nostrils and lips as thin contours, never as black shapes. "
-    "Draw only the selected people's faces, hair contours, necks, shoulders "
-    "and simple clothing necklines. No scenery "
+    "Draw only the person: face, hair "
+    "contours, neck, shoulders and one simple clothing neckline. No scenery "
     "and no objects from the original background. Absolutely no solid black "
     "areas, no filled shapes, no thick masses, no shading, no gray, no color, "
     "no hatching, no cross-hatching, no stippling, no shadows, no gradients, "
     "no text and no border. Minimal centerline vector art for a pen plotter."
 )
-
-
-def portrait_prompt(people: int = 1, style_prompt: str = DEFAULT_PROMPT) -> str:
-    if type(people) is not int or people not in (1, 2, 3):
-        raise ValueError('Alege 1, 2 sau 3 persoane')
-    subjects = 'person' if people == 1 else 'people'
-    selection = (
-        f'Subject selection: select the {people} {subjects} nearest the camera in the foreground, '
-        'using the largest, clearest foreground faces; ignore people in the background. '
-        f'Include exactly {people} {subjects} when at least that many are visible. '
-        'If fewer people are visible, include only those actually present; never invent, '
-        'duplicate or merge people. Preserve the selected subjects\' left-to-right order, '
-        'individual identities and relative arrangement. Fit all selected heads and '
-        'shoulders together inside the square without cutting off a face. '
-    )
-    return selection + style_prompt
 
 
 def validate_square_reference(source: Path) -> tuple[int, int]:
@@ -367,12 +351,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate square Qwen line art plus centerline SVG for a drawing robot."
     )
-    parser.add_argument("input", type=Path, help="Reference photograph; --people selects 1 to 3 foreground subjects")
+    parser.add_argument("input", type=Path, help="Photograph containing one person")
     parser.add_argument("output_prefix", type=Path, help="Output path without extension")
     parser.add_argument("--server", default="http://127.0.0.1:8188")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
-    parser.add_argument("--people", type=int, choices=(1, 2, 3), default=1,
-                        help="Number of foreground people to include (default: 1)")
     parser.add_argument("--seed", type=int, default=6834410345697826643)
     parser.add_argument("--steps", type=int, default=40)
     parser.add_argument("--size", type=int, default=1328)
@@ -405,7 +387,7 @@ def main() -> None:
         workflow["20"]["inputs"]["image"] = upload_image(
             args.server, args.input
         )
-        workflow["6"]["inputs"]["prompt"] = portrait_prompt(args.people, args.prompt)
+        workflow["6"]["inputs"]["prompt"] = args.prompt
         workflow["11"]["inputs"]["seed"] = args.seed
         workflow["11"]["inputs"]["steps"] = args.steps
         workflow["13"]["inputs"]["filename_prefix"] = (

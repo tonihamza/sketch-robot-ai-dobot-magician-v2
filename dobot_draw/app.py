@@ -44,7 +44,6 @@ class App:
         self.port=tk.StringVar(value=preferred or ('/dev/ttyUSB0' if local_mode() else 'COM5'))
         self.settings={k:tk.StringVar(value=v) for k,v in [('margin','5'),('lift','3'),('offset','0'),('speed','100'),('z_speed','30'),('join_gap','0.3')]}
         self.ai_steps=tk.StringVar(value='24')
-        self.ai_people=tk.StringVar(value='1')
         self.brand=tk.BooleanVar(value=True)
         self.camera_index=tk.StringVar(value="0")
         self.studio=None
@@ -108,9 +107,6 @@ class App:
         airow=ttk.Frame(left);airow.pack(fill='x')
         ttk.Label(airow,text='Pași AI: 16 rapid / 24 echilibrat / 40 detaliat').pack(side='left')
         ttk.Combobox(airow,textvariable=self.ai_steps,values=['16','24','32','40'],width=7).pack(side='left',padx=10)
-        people_row=ttk.Frame(left);people_row.pack(fill='x',pady=3)
-        ttk.Label(people_row,text='Persoane din prim-plan').pack(side='left')
-        ttk.Combobox(people_row,textvariable=self.ai_people,values=['1','2','3'],state='readonly',width=5).pack(side='left',padx=8)
         ttk.Button(left,text='Anulează generarea AI',command=self.cancel_ai).pack(anchor='w')
         self.file_label=ttk.Label(left,text='Niciun SVG ales',wraplength=400);self.file_label.pack(anchor='w',pady=4)
         fields=ttk.Frame(left);fields.pack(fill='x')
@@ -440,8 +436,6 @@ class App:
         try:
             steps=int(self.ai_steps.get())
             if not 1<=steps<=100:raise ValueError('Pași AI: număr întreg între 1 și 100')
-            people=int(self.ai_people.get())
-            if people not in (1,2,3):raise ValueError('Alege 1, 2 sau 3 persoane')
             photo=save_capture(image,ROOT/'captures')
         except Exception as e:self.ai_error(e);self.studio.confirm();return
         use_local=local_mode()
@@ -452,13 +446,13 @@ class App:
         self.invalidate_photo_result();self.ai_photo=photo
         self.studio.photo=source_image
         self.file_label['text']=f'În generare: {photo.name}'
-        self.studio.generating(people)
+        self.studio.generating()
         def task():
             if use_local:
                 from .local_ai import generate
-                return generate(photo,ROOT/'outputs',self.ai_cancel,lambda text:self.events.put(('ai_status',text)),steps=steps,people=people)
+                return generate(photo,ROOT/'outputs',self.ai_cancel,lambda text:self.events.put(('ai_status',text)),steps=steps)
             from .gb10 import generate
-            return generate(photo,ROOT/'outputs',password,self.ai_cancel,lambda text:self.events.put(('ai_status',text)),steps=steps,people=people)
+            return generate(photo,ROOT/'outputs',password,self.ai_cancel,lambda text:self.events.put(('ai_status',text)),steps=steps)
         def done(path):
             self.result_photo=source_image;self.studio.photo=source_image
             self.file=str(path);self.file_label['text']=f'{path.parent.name}/{path.name}';self.dry_key=None

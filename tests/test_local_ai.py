@@ -15,11 +15,11 @@ class LocalAITests(unittest.TestCase):
                 self.assertEqual(command[0],local_ai.sys.executable)
                 self.assertIn(str(photo),command)
                 self.assertIn('http://127.0.0.1:8188',command)
-                self.assertEqual(command[command.index('--people')+1],'3')
+                self.assertNotIn('--people',command)
                 Path(command[4]).with_suffix('.svg').write_text('<svg/>')
                 return process
             with patch.object(local_ai,'ensure_service'),patch.object(local_ai.subprocess,'Popen',side_effect=launch):
-                result=local_ai.generate(photo,Path(temp)/'outputs',threading.Event(),lambda _:None,people=3)
+                result=local_ai.generate(photo,Path(temp)/'outputs',threading.Event(),lambda _:None)
             self.assertTrue(result.is_file());self.assertTrue((result.parent/'generation.log').exists())
             process.terminate.assert_not_called()
 

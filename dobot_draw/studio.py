@@ -278,9 +278,9 @@ class Studio:
         self.clear_dialog()
         self.on_save(self.photo.copy())
 
-    def generating(self,people=1):
+    def generating(self):
         self.result=None;self.state='generating'
-        self.message.set(f'Fotografie salvată · se generează portretul pe GB10 · {people} '+('persoană' if people==1 else 'persoane')+' din prim-plan…')
+        self.message.set('Fotografie salvată · se generează portretul pe GB10…')
         self.paint()
 
     def set_result(self,image):
