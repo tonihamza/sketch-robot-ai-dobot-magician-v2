@@ -115,8 +115,6 @@ def load_svg(filename, cal, margin=5, join_gap=0, brand=False):
                     paths.append(points)
     if not paths:
         raise ValueError('Nu au rămas trasee după filtrarea detaliilor sub 0,05 mm')
-    if len(paths)>1500:
-        raise ValueError('Peste 1.500 de trasee; simplifică SVG-ul')
     before=len(paths)
     paths=join_nearby(paths,join_gap)
     joined=before-len(paths)

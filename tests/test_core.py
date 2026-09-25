@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import numpy as np
-from dobot_draw.geometry import Calibration,build_plan,optimize,join_nearby
+from dobot_draw.geometry import Calibration,build_plan,build_laser_plan,optimize,join_nearby
 from dobot_draw.kinematics import Kinematics
 from dobot_draw.svg import load_svg
 from dobot_draw.robot import Robot,RobotError,packet
@@ -17,6 +17,15 @@ def cal():
 
 
 class GeometryTests(unittest.TestCase):
+    def test_planners_accept_more_than_25000_commands(self):
+        # Small in-bounds zigzag, no physical robot and no emission.
+        path=[(40+i%2*2,40) for i in range(25100)]
+        for planner in (lambda:build_plan(cal(),[path],[230,0,3,0]),
+                        lambda:build_laser_plan(cal(),[path],[230,0,3,0],1)):
+            commands=planner()
+            self.assertGreater(len(commands),25000)
+            self.assertTrue(all(cal().inside(p) for p in commands[::500]))
+
     def test_optimized_travel_never_worse_than_greedy_and_preserves_strokes(self):
         import random
         rng=random.Random(24)
@@ -119,6 +128,14 @@ class GeometryTests(unittest.TestCase):
 
 
 class SVGTests(unittest.TestCase):
+    def test_import_more_than_1500_paths_without_truncation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            f=Path(folder)/'many.svg'
+            lines=''.join(f'<path d="M0 {i*.04}L5 {i*.04}"/>' for i in range(1601))
+            f.write_text('<svg><g fill="none" stroke="black">'+lines+'</g></svg>')
+            paths,_=load_svg(f,cal(),5,0)
+            self.assertEqual(len(paths),1601)
+
     def test_short_fragments_are_joined_before_one_mm_filter(self):
         with tempfile.TemporaryDirectory() as folder:
             f=Path(folder)/'fragments.svg'

@@ -8,13 +8,15 @@ import paramiko
 
 HOST = '100.111.144.112'
 USER = 'toni'
-PROJECT = '/home/toni/dobot-portrait-client'
+PROJECT = '/home/toni/dobot-studio'
 PYTHON = '/home/toni/ComfyUI/.venv/bin/python'
 
 
-def generate(photo, destination, password, cancel, status, host=HOST, user=USER, steps=24):
+def generate(photo, destination, password, cancel, status, host=HOST, user=USER, steps=24, people=1):
     if not isinstance(steps, int) or not 1 <= steps <= 100:
         raise ValueError('Numărul de pași AI trebuie să fie între 1 și 100')
+    if type(people) is not int or people not in (1,2,3):
+        raise ValueError('Alege 1, 2 sau 3 persoane')
     photo = Path(photo)
     if not photo.is_file() or photo.stat().st_size > 30_000_000:
         raise ValueError('Alege o fotografie de maximum 30 MB')
@@ -45,7 +47,7 @@ def generate(photo, destination, password, cancel, status, host=HOST, user=USER,
             status('Trimit fotografia originală pe GB10…')
             sftp.put(str(photo), source, callback=transferred)
             command = shlex.join([PYTHON, '-u', PROJECT+'/generate_robot_portrait.py',
-                                  source, remote+'/portrait', '--paper-mm', '80', '--steps', str(steps)])
+                                  source, remote+'/portrait', '--paper-mm', '80', '--steps', str(steps), '--people', str(people)])
             # A dedicated PTY permits Ctrl-C to cancel this client only.
             _, stdout, _ = client.exec_command(command, get_pty=True)
             channel = stdout.channel

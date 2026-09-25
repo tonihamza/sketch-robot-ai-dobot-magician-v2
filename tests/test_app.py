@@ -124,6 +124,8 @@ class AppTests(unittest.TestCase):
                 app.file=str(ROOT/'examples/patrat.svg');app.fingerprint=app.current_fingerprint={'tool':b'tool'.hex()}
                 app.clear.set(True);app.fixed.set(True);app.run(False)
                 self.assertTrue(entered.wait(3));self.assertTrue(app.busy)
+                self.assertTrue(app.studio.drawing_running)
+                frozen=app.studio.active_drawing.tobytes()
                 active_name=app.active_job.get()
                 next_svg=ROOT/'examples/portrete/01_femeie_lineart.svg'
                 photo=Image.new('RGB',(40,40),'white');app.studio.photo=photo
@@ -135,10 +137,13 @@ class AppTests(unittest.TestCase):
                 self.assertFalse(app.ai_busy);self.assertTrue(app.busy)
                 self.assertEqual(app.active_job.get(),active_name)
                 self.assertEqual(app.file,str(next_svg));self.assertEqual(app.studio.state,'result')
+                self.assertEqual(app.studio.active_drawing.tobytes(),frozen)
                 app.settings['offset'].set('20')
                 gate.set();deadline=time.monotonic()+5
                 while app.busy and time.monotonic()<deadline:root.update();time.sleep(.01)
                 self.assertFalse(app.busy);self.assertFalse(error.called)
+                self.assertFalse(app.studio.drawing_running)
+                self.assertEqual(app.studio.active_drawing.tobytes(),frozen)
                 self.assertTrue(app.robot.moves);self.assertLessEqual(max(p[2] for p in app.robot.moves),3)
                 self.assertEqual(len(list(Path(temp).glob('job-*.json'))),1)
             finally:
@@ -244,11 +249,13 @@ class AppTests(unittest.TestCase):
             root=tk.Tk();root.withdraw();app=App(root)
             try:
                 photo=Image.new('RGB',(40,40),'white');app.studio.photo=photo
+                app.ai_people.set('3')
                 with patch('dobot_draw.app.save_capture',return_value=Path(temp)/'photo.png'),patch('dobot_draw.app.simpledialog.askstring') as password,patch('dobot_draw.local_ai.generate',return_value=ROOT/'examples/patrat.svg') as generate:
                     app.generate_captured(photo)
                     deadline=time.monotonic()+5
                     while app.ai_busy and time.monotonic()<deadline:root.update();time.sleep(.01)
                     self.assertFalse(app.ai_busy);generate.assert_called_once();password.assert_not_called()
+                    self.assertEqual(generate.call_args.kwargs['people'],3)
                     self.assertEqual(app.studio.state,'result');self.assertIsNone(app.robot)
             finally:app.close()
 

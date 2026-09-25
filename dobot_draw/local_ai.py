@@ -47,10 +47,12 @@ def ensure_service(cancel, status):
     raise RuntimeError('ComfyUI nu răspunde după pornire. Verifică jurnalul serviciului.')
 
 
-def generate(photo, destination, cancel, status, steps=24):
+def generate(photo, destination, cancel, status, steps=24, people=1):
     photo = Path(photo).resolve()
     if not isinstance(steps, int) or not 1 <= steps <= 100:
         raise ValueError('Numărul de pași AI trebuie să fie între 1 și 100')
+    if type(people) is not int or people not in (1,2,3):
+        raise ValueError('Alege 1, 2 sau 3 persoane')
     if not photo.is_file() or photo.stat().st_size > 30_000_000:
         raise ValueError('Alege o fotografie de maximum 30 MB')
     if cancel.is_set():
@@ -63,7 +65,7 @@ def generate(photo, destination, cancel, status, steps=24):
     log = local/'generation.log'
     command = [sys.executable, '-u', str(ROOT/'generate_robot_portrait.py'),
                str(photo), str(local/'portrait'), '--server', SERVER,
-               '--paper-mm', '80', '--steps', str(steps)]
+               '--paper-mm', '80', '--steps', str(steps), '--people', str(people)]
     started = time.monotonic()
     status(f'AI local · Qwen · {steps} pași…')
     # File output avoids a blocked subprocess pipe and preserves diagnostic logs.

@@ -7,11 +7,24 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from generate_robot_portrait import raster_to_svg, validate_square_reference, trace_skeleton
+from generate_robot_portrait import raster_to_svg, validate_square_reference, trace_skeleton, portrait_prompt
 import numpy as np
 
 
 class VectorizationTests(unittest.TestCase):
+    def test_selected_foreground_people_and_outline_only_eyebrows(self):
+        for people in (1,2,3):
+            prompt=portrait_prompt(people)
+            self.assertIn(f'Include exactly {people}',prompt)
+            self.assertIn('nearest the camera in the foreground',prompt)
+            self.assertIn('ignore people in the background',prompt)
+            self.assertIn('never invent',prompt)
+            self.assertIn('each eyebrow only as one simple',prompt)
+            self.assertIn('completely empty white interior',prompt)
+            self.assertIn('No individual eyebrow hairs',prompt)
+        for invalid in (0,4,True,'2'):
+            with self.assertRaises(ValueError):portrait_prompt(invalid)
+
     def test_short_bridge_between_long_lines_is_not_deleted(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)

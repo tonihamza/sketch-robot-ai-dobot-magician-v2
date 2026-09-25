@@ -154,16 +154,51 @@ class Studio:
         self.camera=None;self.retired=[];self.photo=None;self.result=None
         self.state='empty';self.deadline=None;self.dialog=None;self.closed=False
         self.last_frame_stamp=None;self.last_countdown=None;self.capture_deadline=None
+        self.active_drawing=None;self.drawing_running=False;self.drawing_action=''
+        self.drawing_percent=0;self.drawing_photo=None
         self.window=tk.Toplevel(root);self.window.title('LAPTOP AID · Cameră și portret')
         self.window.geometry('1000x640');self.window.minsize(420,350)
         self.window.protocol('WM_DELETE_WINDOW',self.hide)
         self.message=tk.StringVar(value='Alege o fotografie, pornește camera sau încarcă un SVG din fereastra principală.')
-        ttk.Label(self.window,textvariable=self.message,wraplength=900,padding=10).pack(fill='x')
+        header=ttk.Frame(self.window);header.pack(fill='x')
+        self.drawing_card=ttk.Frame(header,padding=8)
+        self.drawing_caption=tk.StringVar(value='')
+        ttk.Label(self.drawing_card,textvariable=self.drawing_caption,wraplength=155).pack()
+        self.drawing_canvas=tk.Canvas(self.drawing_card,width=150,height=150,bg='white',highlightthickness=1,highlightbackground='#64748b')
+        self.drawing_canvas.pack()
+        self.message_label=ttk.Label(header,textvariable=self.message,wraplength=650,padding=10)
+        self.message_label.pack(side='left',fill='both',expand=True)
+        header.bind('<Configure>',lambda e:self.message_label.configure(wraplength=max(150,e.width-(190 if self.active_drawing is not None else 20))))
         self.canvas=tk.Canvas(self.window,bg='#16212b',highlightthickness=0);self.canvas.pack(fill='both',expand=True)
         self.canvas.bind('<Configure>',lambda _:self.paint())
         self.photos=[];self.tick_id=root.after(40,self.tick)
 
     def show(self):self.window.deiconify();self.window.lift()
+
+    def set_active_drawing(self,image,action):
+        # This snapshot belongs to the robot job, independently of the next
+        # photograph/result. Never replace it in capture or AI callbacks.
+        self.active_drawing=image.copy();self.drawing_action=action
+        self.drawing_running=True;self.drawing_percent=0
+        self.drawing_caption.set(f'{action} · pregătire')
+        self.drawing_card.pack(side='right',anchor='ne',before=self.message_label)
+        self.drawing_photo=ImageTk.PhotoImage(self.active_drawing.resize((150,150),Image.Resampling.LANCZOS),master=self.window)
+        self.drawing_canvas.delete('all');self.drawing_canvas.create_image(75,75,image=self.drawing_photo)
+        self.show()
+
+    def update_drawing_progress(self,percent):
+        if not self.drawing_running:return
+        percent=max(0,min(100,int(percent)))
+        if percent!=self.drawing_percent:
+            self.drawing_percent=percent
+            self.drawing_caption.set(f'{self.drawing_action} în curs · {percent}%')
+
+    def finish_drawing(self,success):
+        if not self.drawing_running:return
+        self.drawing_running=False
+        if success:self.drawing_percent=100
+        status='terminată' if success else 'oprită'
+        self.drawing_caption.set(f'{self.drawing_action} {status} · {self.drawing_percent}%')
 
     def stop_camera(self):
         if self.camera:
@@ -243,8 +278,10 @@ class Studio:
         self.clear_dialog()
         self.on_save(self.photo.copy())
 
-    def generating(self):
-        self.result=None;self.state='generating';self.message.set('Fotografie salvată · se generează portretul pe GB10…');self.paint()
+    def generating(self,people=1):
+        self.result=None;self.state='generating'
+        self.message.set(f'Fotografie salvată · se generează portretul pe GB10 · {people} '+('persoană' if people==1 else 'persoane')+' din prim-plan…')
+        self.paint()
 
     def set_result(self,image):
         self.stop_camera();self.clear_dialog();self.result=image;self.state='result'

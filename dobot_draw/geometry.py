@@ -173,8 +173,6 @@ def build_plan(cal, paths, start, lift=3, offset=0, dry=False, grouped=False):
         add(cal.world(*path[-1],travel_offset))
     add([current[0],current[1],cal.contact_z+park_offset])
     add(cal.world(sx,sy,park_offset), 'cp')
-    if len(commands)>25000:
-        raise ValueError('SVG prea complex: peste 25.000 de segmente. Simplifică desenul.')
     return operations if grouped else commands
 
 
@@ -204,7 +202,6 @@ def build_laser_plan(cal, paths, start, laser_z, dry=False, grouped=False):
             if not cal.inside(p):raise ValueError('Traseul laser iese din interiorul foii')
             points.append([*map(float,p),float(start[3])])
         commands.extend(points)
-        if len(commands)>25000:raise ValueError('Laser: peste 25.000 de segmente')
         operations.append((kind,points if kind!='ptp' else [points[-1]]))
         current=target
     def world(xy,z):return cal.world(*xy,z-cal.contact_z)

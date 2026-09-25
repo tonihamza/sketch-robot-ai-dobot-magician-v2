@@ -19,6 +19,26 @@ class FakeCamera:
 
 
 class StudioTests(unittest.TestCase):
+    def test_active_robot_thumbnail_survives_next_photo_and_ai_result(self):
+        root=tk.Tk();root.withdraw();studio=Studio(root,lambda _:None,lambda:None,lambda _:None)
+        try:
+            current=Image.new('RGB',(80,80),'red')
+            studio.set_active_drawing(current,'Gravare');current.putpixel((0,0),(0,0,0))
+            studio.window.geometry('420x350');root.update()
+            self.assertGreaterEqual(studio.drawing_card.winfo_width(),150)
+            self.assertLessEqual(studio.drawing_card.winfo_x()+studio.drawing_card.winfo_width(),studio.window.winfo_width())
+            frozen=studio.active_drawing.tobytes()
+            studio.cancel_capture();studio.photo=Image.new('RGB',(40,40),'blue')
+            studio.generating(3);studio.update_drawing_progress(42.8)
+            self.assertEqual(studio.active_drawing.tobytes(),frozen)
+            self.assertIn('42%',studio.drawing_caption.get());self.assertIn('3 persoane',studio.message.get())
+            studio.set_result(Image.new('RGB',(80,80),'green'))
+            self.assertEqual(studio.active_drawing.tobytes(),frozen)
+            self.assertTrue(studio.drawing_running)
+            studio.finish_drawing(True)
+            self.assertIn('terminată',studio.drawing_caption.get());self.assertEqual(studio.drawing_percent,100)
+            studio.update_drawing_progress(2);self.assertEqual(studio.drawing_percent,100)
+        finally:studio.close();root.destroy()
     def test_linux_camera_uses_largest_advertised_mode(self):
         listing="""[0]: 'YUYV' (YUYV 4:2:2)\n    Size: Discrete 640x480\n[1]: 'MJPG' (Motion-JPEG)\n    Size: Discrete 1920x1080\n    Size: Discrete 3840x2160\n"""
         result=type('Result',(),{'returncode':0,'stdout':listing})()
