@@ -81,11 +81,12 @@ def configure_camera(cap,cv2,index,*,purpose='photo',modes=None):
     return width,height
 
 
-def render_paths(paths,width,height,size=900):
-    image=Image.new('RGB',(size,size),'white');draw=ImageDraw.Draw(image)
+def render_paths(paths,width,height,size=900,line_width=2):
+    size=max(1,round(size));aa=3
+    image=Image.new('RGB',(size*aa,size*aa),'white');draw=ImageDraw.Draw(image)
     for path in paths:
-        if len(path)>1:draw.line([(x/width*size,y/height*size) for x,y in path],fill='#152f43',width=2)
-    return image
+        if len(path)>1:draw.line([(x/width*size*aa,y/height*size*aa) for x,y in path],fill='#152f43',width=max(1,round(line_width*aa)),joint='curve')
+    return image.resize((size,size),Image.Resampling.LANCZOS)
 
 
 class Camera:

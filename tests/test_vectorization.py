@@ -98,6 +98,7 @@ class VectorizationTests(unittest.TestCase):
             self.assertGreater(paths, 0)
             self.assertIn('width="80mm" height="80mm"', svg)
             self.assertIn('fill="none"', svg)
+            self.assertIn('Q ', svg)
             self.assertNotIn("<image", svg)
             self.assertNotIn("<rect", svg)
 

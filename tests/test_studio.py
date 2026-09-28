@@ -19,6 +19,14 @@ class FakeCamera:
 
 
 class StudioTests(unittest.TestCase):
+    def test_path_preview_has_antialiased_edges_without_changing_geometry(self):
+        paths=[[(10,10),(70,45)]]
+        rendered=render_paths(paths,80,80,size=160)
+        self.assertEqual(rendered.size,(160,160))
+        colors=set(rendered.getdata())
+        self.assertGreater(len(colors),3)
+        self.assertEqual(paths,[[(10,10),(70,45)]])
+
     def test_active_robot_thumbnail_survives_next_photo_and_ai_result(self):
         root=tk.Tk();root.withdraw();studio=Studio(root,lambda _:None,lambda:None,lambda _:None)
         try:

@@ -7,6 +7,7 @@ import traceback
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
+from PIL import ImageTk
 from serial.tools import list_ports
 from .robot import Robot, RobotError
 from .geometry import Calibration, build_plan, build_laser_plan
@@ -500,10 +501,9 @@ class App:
             c.create_text(ox+x*scale,oy+y*scale+(-16 if y==0 else 16),text=label,fill='#233b50',font=('Segoe UI',10,'bold'))
         display_cal=self.cal or self.preview_cal
         if display_cal:
-            sx=size/display_cal.width;sy=size/display_cal.height
-            for p in self.paths:
-                coords=[z for x,y in p for z in (ox+x*sx,oy+y*sy)]
-                if len(coords)>=4:c.create_line(*coords,fill='#152f43',width=1)
+            rendered=render_paths(self.paths,display_cal.width,display_cal.height,size=size,line_width=1)
+            self.path_preview=ImageTk.PhotoImage(rendered,master=c)
+            c.create_image(ox,oy,image=self.path_preview,anchor='nw')
         c.create_text(w/2,oy+size+42,text='Vedere de sus · proporțiile desenului sunt păstrate',fill='#536778')
 
     def run(self,dry):

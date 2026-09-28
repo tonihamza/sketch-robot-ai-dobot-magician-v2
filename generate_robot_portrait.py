@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 import numpy as np
 import requests
 from PIL import Image, ImageOps, ImageDraw
+from dobot_draw.curves import rounded_segments, flatten_segments, svg_commands
 
 
 DEFAULT_PROMPT = (
@@ -330,10 +331,11 @@ def raster_to_svg(
 
     height, width = grayscale.shape
     elements = []
+    preview_paths = []
     for path in paths:
-        commands = [f"M {path[0][0]:.2f} {path[0][1]:.2f}"]
-        commands.extend(f"L {x:.2f} {y:.2f}" for x, y in path[1:])
-        elements.append(f'    <path d="{" ".join(commands)}" />')
+        curves = rounded_segments(path, min(max(0, simplify), .08*width/paper_mm))
+        elements.append(f'    <path d="{svg_commands(curves)}" />')
+        preview_paths.append(flatten_segments(curves, .2))
     svg = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         f'<svg xmlns="http://www.w3.org/2000/svg" '
@@ -349,7 +351,7 @@ def raster_to_svg(
     # Preview the paths actually exported, after filtering/simplification.
     preview = Image.new('L', (width, height), 255)
     drawing = ImageDraw.Draw(preview)
-    for path in paths:
+    for path in preview_paths:
         drawing.line(path, fill=0, width=max(1, round(stroke_width)))
     preview.save(preview_png)
     return len(paths), int(np.count_nonzero(skeleton))

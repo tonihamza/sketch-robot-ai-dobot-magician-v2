@@ -3,8 +3,9 @@ import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path as FilePath
-from svgelements import SVG, Path, Shape, Move
+from svgelements import SVG, Path, Shape, Move, Line, Close
 from .geometry import optimize, join_nearby
+from .curves import rounded_segments, flatten_segments
 
 
 def simplify(points, epsilon=.05):
@@ -98,10 +99,11 @@ def load_svg(filename, cal, margin=5, join_gap=0, brand=False):
     paths=[];total=0
     for shape in shapes:
         for sub in shape.as_subpaths():
-            points=[]
+            points=[];has_curves=False
             for segment in sub:
                 if isinstance(segment,Move):
                     continue
+                has_curves=has_curves or not isinstance(segment,(Line,Close))
                 n=max(1,math.ceil(segment.length(error=1e-5)*scale/.25))
                 total+=n
                 if total>200_000:
@@ -110,7 +112,12 @@ def load_svg(filename, cal, margin=5, join_gap=0, brand=False):
                     points.append(xy(segment.point(0)))
                 points.extend(xy(segment.point(i/n)) for i in range(1,n+1))
             if len(points)>1:
-                points=simplify(points)
+                if has_curves:
+                    # Preserve imported SVG curves; never blend them a second time.
+                    points=simplify(points,.025)
+                else:
+                    points=simplify(points)
+                    points=simplify(flatten_segments(rounded_segments(points,.08),.025),.025)
                 if sum(math.dist(a,b) for a,b in zip(points,points[1:]))>=.05:
                     paths.append(points)
     if not paths:
