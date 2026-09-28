@@ -15,13 +15,15 @@ class VectorizationTests(unittest.TestCase):
     def test_single_person_prompt_preserves_expression_and_visible_features(self):
         self.assertIn('portrait of the person in the reference photograph',DEFAULT_PROMPT)
         self.assertIn("Preserve the person's recognizable facial",DEFAULT_PROMPT)
-        self.assertIn('Draw only the person: face, hair and beard contours',DEFAULT_PROMPT)
+        self.assertIn('Draw only the person: face, hair contours',DEFAULT_PROMPT)
         self.assertNotIn('Subject selection',DEFAULT_PROMPT)
         self.assertNotIn('people',DEFAULT_PROMPT)
         self.assertIn('Draw eyebrows, pupils, nostrils and lips as thin contours, never as black shapes',DEFAULT_PROMPT)
         self.assertIn('exact head angle, tilt, profile, gaze direction and facial expression',DEFAULT_PROMPT)
         self.assertIn('grimaces, winks, an open mouth or a visible tongue',DEFAULT_PROMPT)
-        self.assertIn('visible beard, moustache',DEFAULT_PROMPT)
+        self.assertIn('Keep clean-shaven skin smooth and empty',DEFAULT_PROMPT)
+        self.assertIn('actual hair is unmistakably visible in the reference; if uncertain, omit it',DEFAULT_PROMPT)
+        self.assertIn('must not become a beard or moustache',DEFAULT_PROMPT)
         self.assertIn('Include them only when present in the photograph',DEFAULT_PROMPT)
         self.assertIn('sparse contours, not individual hairs or dense texture',DEFAULT_PROMPT)
 
