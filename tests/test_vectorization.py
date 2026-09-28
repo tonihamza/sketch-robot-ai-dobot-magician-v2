@@ -12,15 +12,18 @@ import numpy as np
 
 
 class VectorizationTests(unittest.TestCase):
-    def test_single_person_prompt_and_outline_only_eyebrows(self):
+    def test_single_person_prompt_preserves_expression_and_visible_features(self):
         self.assertIn('portrait of the person in the reference photograph',DEFAULT_PROMPT)
         self.assertIn("Preserve the person's recognizable facial",DEFAULT_PROMPT)
-        self.assertIn('Draw only the person: face, hair contours',DEFAULT_PROMPT)
+        self.assertIn('Draw only the person: face, hair and beard contours',DEFAULT_PROMPT)
         self.assertNotIn('Subject selection',DEFAULT_PROMPT)
         self.assertNotIn('people',DEFAULT_PROMPT)
-        self.assertIn('each eyebrow only as one simple',DEFAULT_PROMPT)
-        self.assertIn('completely empty white interior',DEFAULT_PROMPT)
-        self.assertIn('No individual eyebrow hairs',DEFAULT_PROMPT)
+        self.assertIn('Draw eyebrows, pupils, nostrils and lips as thin contours, never as black shapes',DEFAULT_PROMPT)
+        self.assertIn('exact head angle, tilt, profile, gaze direction and facial expression',DEFAULT_PROMPT)
+        self.assertIn('grimaces, winks, an open mouth or a visible tongue',DEFAULT_PROMPT)
+        self.assertIn('visible beard, moustache',DEFAULT_PROMPT)
+        self.assertIn('Include them only when present in the photograph',DEFAULT_PROMPT)
+        self.assertIn('sparse contours, not individual hairs or dense texture',DEFAULT_PROMPT)
 
     def test_short_bridge_between_long_lines_is_not_deleted(self):
         with tempfile.TemporaryDirectory() as temporary:
