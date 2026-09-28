@@ -14,6 +14,12 @@ class RobotError(RuntimeError):
     pass
 
 
+# Keep only a short autonomous motion window inside the controller.  If the
+# USB cable or hub disappears, the host cannot deliver STOP or laser-OFF; a
+# small lookahead limits how far the robot can continue on its own.
+CP_LOOKAHEAD = 4
+
+
 def packet(command, control=0, data=b''):
     payload = bytes((command, control)) + data
     return b'\xaa\xaa' + bytes((len(payload),)) + payload + bytes((-sum(payload) & 255,))
@@ -114,7 +120,9 @@ class Robot:
         if getattr(self,'laser_session',False):
             try:self.laser_off()
             except Exception as e:errors.append(str(e))
-        for cmd in (242, 245):
+        # Stop normal queue execution, force-stop a command that is already in
+        # motion, and finally discard everything that has not executed.
+        for cmd in (241, 242, 245):
             try:
                 self.rpc(cmd, 1, allow_fault=True)
             except Exception as e:
@@ -216,14 +224,19 @@ class Robot:
         sent = completed = 0
         total = len(points) + (2 if laser_power is not None else 1)
         running = False
+        # Every stroke is a separate, completed transaction.  Clear executed
+        # queue history before submitting the next one; otherwise repeated
+        # CP/CPLE start-stop cycles can leave older queue state in Magician's
+        # small controller and eventually stop index advancement.
         self.rpc(241, 1)
+        self.rpc(245, 1)
         stall_timeout = 15 + 2 / getattr(self, 'speed', 100)
         deadline = time.monotonic() + stall_timeout
         alarm_time = 0
         while completed < total:
             if cancel.is_set():
                 raise RobotError('Oprit de utilizator')
-            while sent < total and len(pending) < 16:
+            while sent < total and len(pending) < CP_LOOKAHEAD:
                 if cancel.is_set():
                     raise RobotError('Oprit de utilizator')
                 space = self.rpc(247)
@@ -265,7 +278,13 @@ class Robot:
                 self.check_clear()
                 alarm_time = time.monotonic() + .2
             if time.monotonic() > deadline:
-                raise RobotError('Mișcarea CP nu mai progresează')
+                next_index = pending[0] if pending else None
+                raise RobotError(
+                    'Mișcarea CP nu mai progresează '
+                    f'(executat={current}, următor={next_index}, '
+                    f'trimise={sent}/{total}). Oprește alimentarea uneltei '
+                    'dacă legătura USB s-a întrerupt.'
+                )
             if cancel.wait(.01):
                 raise RobotError('Oprit de utilizator')
 

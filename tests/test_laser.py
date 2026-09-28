@@ -33,7 +33,7 @@ class LaserTests(unittest.TestCase):
         self.assertLess(calls.index(program[-1]),calls.index((240,1,b'')))
         self.assertEqual(sum(c[0]==240 for c in calls),1)
         self.assertFalse(any(c[0] in (84,91,92) for c in calls))
-        self.assertEqual([c[0] for c in calls[-5:]],[61,242,245,61,61])
+        self.assertEqual([c[0] for c in calls[-6:]],[61,241,242,245,61,61])
         self.assertEqual(started,[True])
 
     def test_focus_stop_before_start_and_during_pulse_always_clears_and_turns_off(self):
@@ -143,7 +143,7 @@ class LaserTests(unittest.TestCase):
             return b''
         with patch.object(robot,'rpc',side_effect=rpc):
             with self.assertRaises(RobotError):robot.stop()
-        self.assertEqual(calls,[61,242,245,61])
+        self.assertEqual(calls,[61,241,242,245,61])
 
     def test_invalid_power_never_submits(self):
         robot=Robot.__new__(Robot);robot.laser_session=True

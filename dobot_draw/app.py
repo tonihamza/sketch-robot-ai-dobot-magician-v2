@@ -20,6 +20,19 @@ DATA=ROOT/'data'
 NAMES=['1 · STÂNGA SUS','2 · DREAPTA SUS','3 · DREAPTA JOS','4 · STÂNGA JOS']
 
 
+def robot_ports():
+    """Return displayed ports and a stable preferred Dobot device path."""
+    devices=list(list_ports.comports())
+    values=[p.device for p in devices]
+    stable=Path('/dev/dobot-magician')
+    if stable.exists():
+        preferred=str(stable)
+        if preferred not in values:values.insert(0,preferred)
+    else:
+        preferred=next((p.device for p in devices if p.vid==0x10c4 and p.pid==0xea60),None)
+    return devices,values,preferred
+
+
 class App:
     def __init__(self, root):
         self.root=root
@@ -39,8 +52,7 @@ class App:
         self.focus_active=False;self.disconnect_after_focus=False
         self.focus_status=tk.StringVar(value='Focalizare: neactivată')
         self.status=tk.StringVar(value='Deconectat · Conectează robotul pentru calibrare')
-        devices=list(list_ports.comports())
-        preferred=next((p.device for p in devices if p.vid==0x10c4 and p.pid==0xea60),None)
+        devices,port_values,preferred=robot_ports()
         self.port=tk.StringVar(value=preferred or ('/dev/ttyUSB0' if local_mode() else 'COM5'))
         self.settings={k:tk.StringVar(value=v) for k,v in [('margin','5'),('lift','3'),('offset','0'),('speed','100'),('z_speed','30'),('join_gap','0.3')]}
         self.ai_steps=tk.StringVar(value='24')
@@ -56,7 +68,7 @@ class App:
         ttk.Label(outer,text='DOBOT  /  SVG PE HÂRTIE',font=('Segoe UI',20,'bold')).pack(anchor='w')
         ttk.Label(outer,text='USB direct • fără DobotLab / DobotLink • toate fișierele rămân locale').pack(anchor='w',pady=(2,12))
         top=ttk.Frame(outer);top.pack(fill='x')
-        self.ports=ttk.Combobox(top,textvariable=self.port,width=19,values=[p.device for p in devices],postcommand=self.refresh_ports);self.ports.pack(side='left')
+        self.ports=ttk.Combobox(top,textvariable=self.port,width=19,values=port_values,postcommand=self.refresh_ports);self.ports.pack(side='left')
         self.connect_button=ttk.Button(top,text='Conectează USB',command=self.connect);self.connect_button.pack(side='left',padx=8)
         ttk.Button(top,text='Citește poziția',command=self.read_pose).pack(side='left')
         tk.Button(top,text='■  STOP',bg='#b42332',fg='white',font=('Segoe UI',12,'bold'),command=self.stop,padx=22).pack(side='right')
@@ -302,10 +314,9 @@ class App:
         self.background(task,done)
 
     def refresh_ports(self):
-        devices=list(list_ports.comports())
-        self.ports['values']=[p.device for p in devices]
+        devices,values,preferred=robot_ports()
+        self.ports['values']=values
         if not self.robot and self.port.get() not in self.ports['values']:
-            preferred=next((p.device for p in devices if p.vid==0x10c4 and p.pid==0xea60),None)
             if preferred:self.port.set(preferred)
 
     def connect(self):

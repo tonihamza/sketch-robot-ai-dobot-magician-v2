@@ -1,2 +1,4 @@
-# Magician USB serial bridge. Permissions apply to the local desktop session.
+# Magician USB serial bridge. Keep this device awake, ignore modem probing,
+# expose a stable name across USB reconnects, and grant the desktop session.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="10c4", ATTR{idProduct}=="ea60", TEST=="power/control", ATTR{power/control}="on"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", GROUP="dialout", MODE="0660", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1", SYMLINK+="dobot-magician"

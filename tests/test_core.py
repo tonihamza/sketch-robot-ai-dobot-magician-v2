@@ -256,12 +256,13 @@ class TransportTests(unittest.TestCase):
         with patch.object(r,'rpc',side_effect=rpc),patch.object(r,'check_clear'):
             r.continuous([[220+i,0,0,0] for i in range(40)],threading.Event(),progress.append)
         start=next(i for i,c in enumerate(calls) if c[0]==240)
-        self.assertEqual(sum(c[0]==91 for c in calls[:start]),16)
+        self.assertEqual(sum(c[0]==91 for c in calls[:start]),4)
         self.assertEqual(sum(c[0]==91 for c in calls),40)
         self.assertEqual(executed,41)
         self.assertEqual(progress[-1],40)
         payload=next(c[1] for c in calls if c[0]==91)
         self.assertEqual(struct.unpack('<B4f',payload),(1,220,0,0,0))
+        self.assertEqual([c[0] for c in calls[:2]],[241,245])
 
     def test_cp_cancel_during_prefill_stops_submission(self):
         r=Robot.__new__(Robot);cancel=threading.Event();moves=[]
