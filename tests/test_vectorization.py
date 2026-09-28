@@ -1,31 +1,51 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from generate_robot_portrait import raster_to_svg, validate_square_reference, trace_skeleton, DEFAULT_PROMPT
+from generate_robot_portrait import raster_to_svg, validate_square_reference, trace_skeleton, DEFAULT_PROMPT, extract_solid_details
 import numpy as np
 
 
 class VectorizationTests(unittest.TestCase):
-    def test_single_person_prompt_preserves_expression_and_visible_features(self):
-        self.assertIn('portrait of the person in the reference photograph',DEFAULT_PROMPT)
-        self.assertIn("Preserve the person's recognizable facial",DEFAULT_PROMPT)
-        self.assertIn('Draw only the person: face, hair contours',DEFAULT_PROMPT)
-        self.assertNotIn('Subject selection',DEFAULT_PROMPT)
-        self.assertNotIn('people',DEFAULT_PROMPT)
-        self.assertIn('Draw eyebrows, pupils, nostrils and lips as thin contours, never as black shapes',DEFAULT_PROMPT)
-        self.assertIn('exact head angle, tilt, profile, gaze direction and facial expression',DEFAULT_PROMPT)
-        self.assertIn('grimaces, winks, an open mouth or a visible tongue',DEFAULT_PROMPT)
-        self.assertIn('Keep clean-shaven skin smooth and empty',DEFAULT_PROMPT)
-        self.assertIn('actual hair is unmistakably visible in the reference; if uncertain, omit it',DEFAULT_PROMPT)
-        self.assertIn('must not become a beard or moustache',DEFAULT_PROMPT)
-        self.assertIn('Include them only when present in the photograph',DEFAULT_PROMPT)
-        self.assertIn('sparse contours, not individual hairs or dense texture',DEFAULT_PROMPT)
+    def test_workflow_uses_same_photo_fidelity_prompt_as_cli(self):
+        workflow=json.loads((Path(__file__).resolve().parents[1]/'qwen_lineart_workflow_api.json').read_text())
+        self.assertEqual(workflow['6']['inputs']['prompt'],DEFAULT_PROMPT)
+        self.assertIn('closed lips must stay touching',DEFAULT_PROMPT)
+        self.assertIn('original eye shapes and pupil positions',DEFAULT_PROMPT)
+        self.assertNotIn('Create a centered',DEFAULT_PROMPT)
+
+    def test_filled_pupils_become_closed_outlines_instead_of_disappearing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);im=Image.new('L',(512,512),255);draw=ImageDraw.Draw(im)
+            draw.ellipse((120,200,130,210),fill=0)
+            draw.ellipse((370,200,380,210),fill=0)
+            draw.point((30,30),fill=0);im.save(root/'source.png')
+            remaining,details=extract_solid_details(np.asarray(im)<210,80)
+            self.assertEqual(len(details),2)
+            self.assertTrue(all(p[0]==p[-1] and len(p)>=4 for p in details))
+            self.assertEqual(int(remaining.sum()),1)  # speck is not promoted to a pupil
+            count,_=raster_to_svg(root/'source.png',root/'out.svg',root/'out.png',threshold=210,simplify=1.25,minimum_path_length=7,paper_mm=80,stroke_width=1)
+            self.assertEqual(count,2)
+            self.assertIn('fill="none"',(root/'out.svg').read_text())
+            with Image.open(root/'out.png') as preview:
+                self.assertEqual(preview.getpixel((125,205)),255)  # outline, not fill
+                self.assertLess(preview.getpixel((125,200)),128)
+                self.assertEqual(preview.getpixel((30,30)),255)
+
+    def test_rings_long_strokes_and_large_fills_are_not_replaced(self):
+        im=Image.new('L',(512,512),255);draw=ImageDraw.Draw(im)
+        draw.ellipse((20,20,31,31),outline=0,width=3)
+        draw.rectangle((80,80,180,100),fill=0)
+        draw.line((40,150,80,150),fill=0,width=3)
+        original=np.asarray(im)<210
+        remaining,details=extract_solid_details(original,80)
+        self.assertEqual(details,[]);np.testing.assert_array_equal(remaining,original)
 
     def test_short_bridge_between_long_lines_is_not_deleted(self):
         with tempfile.TemporaryDirectory() as temporary:

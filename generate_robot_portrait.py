@@ -20,37 +20,30 @@ from urllib.parse import urlencode
 
 import numpy as np
 import requests
+import cv2
 from PIL import Image, ImageOps, ImageDraw
 from dobot_draw.curves import rounded_segments, flatten_segments, svg_commands
 
 
 DEFAULT_PROMPT = (
-    "Create a centered square head-and-shoulders line portrait of the person "
-    "in the reference photograph. Preserve the person's recognizable facial "
-    "proportions, hairstyle and expression. Match the exact head angle, tilt, "
-    "profile, gaze direction and facial expression in the photograph, including "
-    "grimaces, winks, an open mouth or a visible tongue. Do not turn the face "
-    "toward the viewer, straighten the head or replace the expression with a "
-    "neutral pose or a standard smile. The generated image itself must "
-    "contain thin black lines only on a completely white background. Use "
-    "clean, sparse, continuous, uniform-width centerline strokes. Every facial "
-    "feature must be represented by outline strokes only. Draw hair using only "
-    "a few contour and strand lines. Draw eyebrows, pupils, nostrils and lips "
-    "as thin contours, never as black shapes. Keep clean-shaven skin smooth "
-    "and empty. Only include facial hair when actual hair is unmistakably "
-    "visible in the reference; if uncertain, omit it. Lighting shadows, "
-    "skin tone, folds and contours around the mouth, chin or jaw are not "
-    "evidence of facial hair and must not become a beard or moustache. "
-    "When clearly present, use sparse contours, not individual hairs or "
-    "dense texture. Preserve distinctive facial features and worn accessories such as "
-    "glasses, earrings, piercings or a hat. Include them only when present in "
-    "the photograph, using simple outline shapes. Draw only the "
-    "person: face, hair contours, visible worn accessories, neck, "
-    "shoulders and one simple clothing neckline. No scenery "
-    "and no objects from the original background. Absolutely no solid black "
-    "areas, no filled shapes, no thick masses, no shading, no gray, no color, "
-    "no hatching, no cross-hatching, no stippling, no shadows, no gradients, "
-    "no text and no border. Minimal centerline vector art for a pen plotter."
+    "Convert the person in the reference photograph into a simple line drawing. "
+    "Change only the rendering style and replace the background with pure white. "
+    "Preserve the exact composition, head angle, facial proportions, asymmetries, "
+    "gaze, hairstyle and expression. Keep the original eye shapes and pupil "
+    "positions. Match the lip contours exactly: closed lips must stay touching "
+    "along their contact line. Do not invent an opening, smile or visible teeth. "
+    "Keep visible facial hair and worn accessories as in the photograph; "
+    "do not turn lighting shadows into facial hair. Do not straighten the head, "
+    "beautify the face or reconstruct features hidden in the photograph. "
+    "The generated image must contain thin black lines only on a completely "
+    "white background. Use clean, sparse, continuous, uniform-width centerline "
+    "strokes. Every facial feature must be represented by outline strokes only. "
+    "Draw hair using only a few contour and strand lines. Draw eyebrows, pupils, "
+    "nostrils and lips as thin contours, never as black shapes. Keep visible eye "
+    "and mouth contours complete. No scenery or objects from the background. "
+    "No solid black areas, filled shapes, thick masses, shading, gray, color, "
+    "hatching, cross-hatching, stippling, shadows, gradients, text or border. "
+    "Minimal centerline vector art for a pen plotter."
 )
 
 
@@ -299,6 +292,36 @@ def order_paths(paths: list[list[tuple[float, float]]]) -> list[list[tuple[float
     return ordered
 
 
+def extract_solid_details(binary: np.ndarray, paper_mm: float):
+    """Outline isolated compact filled details before thinning erases them.
+
+    This is geometric, not face detection: only existing solid components
+    up to 2 mm wide/high qualify. Rings, elongated strokes and specks remain
+    on the regular centerline pipeline. No filled area or hatch is exported.
+    """
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        binary.astype(np.uint8), connectivity=8
+    )
+    remaining = binary.copy()
+    outlines = []
+    maximum = 2 * binary.shape[1] / paper_mm
+    for label in range(1, count):
+        x, y, w, h, area = map(int, stats[label])
+        if (area < 6 or min(w, h) < 2 or max(w, h) > maximum
+                or min(w, h) / max(w, h) < .55 or area / (w*h) < .65):
+            continue
+        component = (labels[y:y+h, x:x+w] == label).astype(np.uint8)
+        contours, _ = cv2.findContours(component, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        # A hole means this already has inner/outer geometry: do not replace it.
+        if len(contours) != 1 or len(contours[0]) < 3:
+            continue
+        path = [(float(px+x), float(py+y)) for px, py in contours[0][:, 0, :]]
+        path.append(path[0])
+        outlines.append(path)
+        remaining[y:y+h, x:x+w][component != 0] = False
+    return remaining, outlines
+
+
 def raster_to_svg(
     source_png: Path,
     destination_svg: Path,
@@ -313,18 +336,22 @@ def raster_to_svg(
     with Image.open(source_png) as opened:
         grayscale = np.asarray(opened.convert("L"), dtype=np.uint8)
     binary = grayscale < threshold
+    binary, solid_details = extract_solid_details(binary, paper_mm)
     skeleton = zhang_suen_thinning(binary)
 
-    raw_paths = trace_skeleton(skeleton)
+    centerlines = trace_skeleton(skeleton)
+    raw_paths = centerlines + solid_details
     endpoints = Counter(point for path in raw_paths for point in (path[0], path[-1]))
     paths = []
-    for path in raw_paths:
+    for index, path in enumerate(raw_paths):
         # Keep short connectors between branches: deleting them opens gaps
         # in an otherwise continuous outline. Isolated specks remain filtered.
         bridge = endpoints[path[0]] > 1 and endpoints[path[-1]] > 1
         if path_length(path) < minimum_path_length and not bridge:
             continue
-        simplified = _rdp(path, simplify)
+        # Small round details need a finer tolerance than long portrait strokes.
+        epsilon = min(simplify, .35) if index >= len(centerlines) else simplify
+        simplified = _rdp(path, epsilon)
         if len(simplified) >= 2:
             paths.append(simplified)
     paths = order_paths(paths)
